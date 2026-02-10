@@ -7,5 +7,6 @@ add_executable(Gerk main.cpp
         src/win32/window.h
         src/win32/common.h
         src/dx12/dx12_framework.h
-        src/logic.h)
+        src/logic.h
+        src/common/obj_loader.h)
 target_link_libraries(Gerk d3d12 dxgi d3dcompiler)

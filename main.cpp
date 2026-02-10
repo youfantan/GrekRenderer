@@ -8,6 +8,7 @@
 
 #include <cmath>
 
+#include "src/common/obj_loader.h"
 #include "src/dx12/dx12_framework.h"
 #include "src/win32/common.h"
 #include "src/win32/window.h"
@@ -19,6 +20,7 @@ bool press_d = false;
 bool press_s = false;
 bool press_space = false;
 bool press_shift = false;
+bool press_alt = false;
 float theta = 0.0f;
 float speed = 0.01f;
 float omega = 0.01f;
@@ -58,6 +60,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     break;
                 case VK_SHIFT: press_shift = true;
                     break;
+                case VK_MENU: press_alt = true; break;
             }
             break;
         }
@@ -79,6 +82,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     break;
                 case VK_SHIFT: press_shift = false;
                     break;
+                case VK_MENU: press_alt = false; break;
             }
             break;
         }
@@ -94,7 +98,7 @@ struct SceneData {
 
 SceneData scene_data{
     .color = {
-        {0.5f, 0.2f, 0.0f, 1.0f},
+        {0.3f, 0.3f, 0.3f, 1.0f},
         {0.2f, 1.0f, 0.3f, 1.0f},
         {0.6f, 0.4f, 0.8f, 1.0f},
         {1.0f, 0.6f, 0.2f, 1.0f},
@@ -122,7 +126,7 @@ void matrix_apply_View(XMFLOAT3 camera, XMFLOAT3 focus) {
 }
 
 void matrix_apply_Projection() {
-    projection = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.1f, 100.0f);
+    projection = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.77f, 0.1f, 100.0f);
 }
 
 void update(float delta) {
@@ -184,7 +188,9 @@ void update(float delta) {
 }
 
 int main() {
-    win32_window window(L"Grek Renderer", WS_OVERLAPPEDWINDOW, 600, 600, WindowProc);
+    obj_loader loader;
+    loader.load_model("columbia.obj");
+    win32_window window(L"Grek Renderer", WS_OVERLAPPEDWINDOW, 1280, 720, WindowProc);
     fps_counter fpsc;
     hwnd = window.handle();
     ShowCursor(FALSE);
@@ -196,51 +202,20 @@ int main() {
         std::cout << "triangle shader not exists" << std::endl;
         exit(EXIT_FAILURE);
     }
-    struct Vertex {
-        float pos[3];
-        uint32_t face;
-    };
 
-    Vertex vertices[] = {
-        {{-0.5f, 0.5f, -0.5f}, 0}, {{0.5f, 0.5f, -0.5f}, 0},
-        {{0.5f, -0.5f, -0.5f}, 0}, {{-0.5f, -0.5f, -0.5f}, 0},
-
-        {{-0.5f, 0.5f, 0.5f}, 1}, {{0.5f, 0.5f, 0.5f}, 1},
-        {{0.5f, -0.5f, 0.5f}, 1}, {{-0.5f, -0.5f, 0.5f}, 1},
-
-        {{-0.5f, 0.5f, 0.5f}, 2}, {{-0.5f, 0.5f, -0.5f}, 2},
-        {{-0.5f, -0.5f, -0.5f}, 2}, {{-0.5f, -0.5f, 0.5f}, 2},
-
-        {{0.5f, 0.5f, -0.5f}, 3}, {{0.5f, 0.5f, 0.5f}, 3},
-        {{0.5f, -0.5f, 0.5f}, 3}, {{0.5f, -0.5f, -0.5f}, 3},
-
-        {{-0.5f, 0.5f, 0.5f}, 4}, {{0.5f, 0.5f, 0.5f}, 4},
-        {{0.5f, 0.5f, -0.5f}, 4}, {{-0.5f, 0.5f, -0.5f}, 4},
-
-        {{-0.5f, -0.5f, -0.5f}, 5}, {{0.5f, -0.5f, -0.5f}, 5},
-        {{0.5f, -0.5f, 0.5f}, 5}, {{-0.5f, -0.5f, 0.5f}, 5}
-    };
-
-    uint16_t indices[] = {
-        0, 1, 2, 0, 2, 3,
-        4, 5, 6, 4, 6, 7,
-        8, 9, 10, 8, 10, 11,
-        12, 13, 14, 12, 14, 15,
-        16, 17, 18, 16, 18, 19,
-        20, 21, 22, 20, 22, 23
-    };
+    obj_loader::vertex* vertices = loader.vertices().data();
+    uint32_t* indices = loader.indices().data();
 
     dx12_framework::dx12_inital_param_t param{
-        .width = 600,
-        .height = 600,
+        .width = 1280,
+        .height = 720,
         .hwnd = hwnd,
         .enable_msaa_4x = true,
-        .clear_color = {0.5f, 0.5f, 0.5f, 1.0f},
+        .clear_color = {0.5f, 0.2f, 0.3f, 1.0f},
     };
     dx12_framework framework(param);
     D3D12_INPUT_ELEMENT_DESC il[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "BLENDINDICES", 0, DXGI_FORMAT_R32_UINT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
     CD3DX12_ROOT_PARAMETER root_params[1];
     root_params[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -252,7 +227,7 @@ int main() {
         .vertex_shader = triangle_vs.value(),
         .fragment_shader = triangle_ps.value()
     };
-    framework.apply_ia(vertices, sizeof(vertices), indices, sizeof(indices));
+    framework.apply_ia(vertices, loader.vertices().size() * sizeof(obj_loader::vertex), indices, loader.indices().size() * sizeof(uint32_t));
     framework.apply_cb(&scene_data);
     framework.apply_pso(pso_p);
     MSG msg = {};
@@ -261,7 +236,7 @@ int main() {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            framework.render();
+            framework.render(loader.indices().size());
             auto delta = fpsc.delta_ms();
             update(delta);
             framework.apply_cb(&scene_data);

@@ -269,7 +269,7 @@ public:
 
         index_buffer_view_.BufferLocation = index_buffer_->GetGPUVirtualAddress();
         index_buffer_view_.SizeInBytes = indices_sz;
-        index_buffer_view_.Format = DXGI_FORMAT_R16_UINT;
+        index_buffer_view_.Format = DXGI_FORMAT_R32_UINT;
         cmd_alloc_->Reset();
         cmd_list_->Reset(cmd_alloc_.Get(), nullptr);
         D3D12_RESOURCE_BARRIER pre_copy[2] = {
@@ -363,7 +363,7 @@ public:
         }
     }
 
-    void render() {
+    void render(uint32_t indices) {
         wait(); // Wait for GPU processing and reset command list
         cmd_alloc_->Reset();
         cmd_list_->Reset(cmd_alloc_.Get(), pso_.Get());
@@ -410,7 +410,7 @@ public:
         cmd_list_->IASetVertexBuffers(0, 1, &vertex_buffer_view_);
         cmd_list_->IASetIndexBuffer(&index_buffer_view_);
         // Draw call
-        cmd_list_->DrawIndexedInstanced(36, 1, 0, 0, 0);
+        cmd_list_->DrawIndexedInstanced(indices, 1, 0, 0, 0);
         if (param_.enable_msaa_4x) {
             D3D12_RESOURCE_BARRIER barriers[2] = {
                 CD3DX12_RESOURCE_BARRIER::Transition(
