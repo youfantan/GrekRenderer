@@ -6,7 +6,7 @@
 
 #include "Windows.h"
 
-inline std::optional<std::wstring> mb_to_wc_win32(std::string_view src) {
+inline std::optional<std::wstring> string_to_wstring(std::string_view src) {
     if (src.empty()) return std::nullopt;
     int len = MultiByteToWideChar(CP_ACP, 0, src.data(), -1, nullptr, 0);
     if (len == 0) return std::nullopt;
@@ -40,3 +40,10 @@ public:
         return fps_;
     }
 };
+
+inline void hr_failed(const char* file, int line, HRESULT hr) {
+    auto text = string_to_wstring(std::format("Operation Failed in file {}:{}. HRESULT: {:X}", file, line, static_cast<uint32_t>(hr)));
+    MessageBox(nullptr, text.value().c_str(), L"ERROR", MB_OK);
+}
+
+#define CHECKHR(hr) if (!SUCCEEDED(hr)) hr_failed(__FILE__, __LINE__, hr)

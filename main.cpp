@@ -26,6 +26,7 @@ float camera_yaw = 90.0f;
 float camera_pitch = 0.0f;
 float sensitivity = 0.2f;
 HWND hwnd;
+bool is_active = true;
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -33,12 +34,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             PostQuitMessage(0);
             return 0;
         }
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                is_active = false;
+                ShowCursor(TRUE);
+            } else {
+                is_active = true;
+                ShowCursor(FALSE);
+            }
+            return 0;
+        }
         case WM_KEYDOWN: {
             switch (wParam) {
-                case VK_ESCAPE: {
-                    PostQuitMessage(0);
-                    break;
-                }
                 case 'W': press_w = true;
                     break;
                 case 'A': press_a = true;
@@ -137,7 +144,7 @@ void update(float delta) {
         if (camera_pitch > 89.0f)  camera_pitch = 89.0f;
         if (camera_pitch < -89.0f) camera_pitch = -89.0f;
         // Reset cursor position
-        SetCursorPos(centerX, centerY);
+        if (is_active) SetCursorPos(centerX, centerY);
     }
 
     float r_pitch = XMConvertToRadians(camera_pitch);
@@ -169,7 +176,7 @@ void update(float delta) {
     // Enable block to rotate
     theta += omega * delta;
 
-    matrix_apply_RTS(0.0f, theta, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f);
+    matrix_apply_RTS(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f);
     matrix_apply_View(position, forward);
     matrix_apply_Projection();
     XMMATRIX wvp = world * view * projection;
@@ -227,6 +234,7 @@ int main() {
         .width = 600,
         .height = 600,
         .hwnd = hwnd,
+        .enable_msaa_4x = true,
         .clear_color = {0.5f, 0.5f, 0.5f, 1.0f},
     };
     dx12_framework framework(param);
@@ -249,7 +257,7 @@ int main() {
     framework.apply_pso(pso_p);
     MSG msg = {};
     while (msg.message != WM_QUIT) {
-        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
@@ -260,5 +268,6 @@ int main() {
             window.set_title(std::format(L"Grek Renderer | {} FPS", fpsc.fps()));
         }
     }
+    framework.wait();
     return 0;
 }

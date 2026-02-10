@@ -12,6 +12,8 @@
 #include <iostream>
 #include <map>
 
+#include "../win32/common.h"
+
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
@@ -43,8 +45,9 @@ private:
     ComPtr<ID3D12CommandAllocator> cmd_alloc_;
     ComPtr<IDXGISwapChain3> swapchain_;
     ComPtr<ID3D12Resource> buffers_[2];
-    ComPtr<ID3D12Resource> msaa_target_;
+    ComPtr<ID3D12Resource> msaa_rt_;
     ComPtr<ID3D12DescriptorHeap> rtv_heap_;
+    ComPtr<ID3D12DescriptorHeap> msaa_rtv_heap_;
     ComPtr<ID3D12DescriptorHeap> dsv_heap_;
     ComPtr<ID3D12Resource> vertex_buffer_;
     ComPtr<ID3D12Resource> vertex_upload_;
@@ -67,35 +70,34 @@ private:
 public:
     dx12_framework(dx12_inital_param_t& p) : param_(p) {
         std::cout << "initializing directx12" << std::endl;
-        CreateDXGIFactory1(IID_PPV_ARGS(&factory_));
+        CHECKHR(CreateDXGIFactory1(IID_PPV_ARGS(&factory_)));
         // Find GPU by performance
-        factory_->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter_));
+        CHECKHR(factory_->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter_)));
         DXGI_ADAPTER_DESC desc;
-        adapter_->GetDesc(&desc);
+        CHECKHR(adapter_->GetDesc(&desc));
         std::wcout << std::format(L"selected adapter {} with GPU memory {} MB", desc.Description, desc.DedicatedVideoMemory / 1024 / 1024) << std::endl;
 
 #ifdef _DEBUG
         ComPtr<ID3D12Debug> debug_controller;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller)))) {
-            debug_controller->EnableDebugLayer();
-        }
+        CHECKHR(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller)));
+        debug_controller->EnableDebugLayer();
 #endif
         // Create DirectX12 device with feature level 11
         D3D12CreateDevice(adapter_.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
 #ifdef _DEBUG
         ComPtr<ID3D12InfoQueue> info_queue;
-        if (SUCCEEDED(device_->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
-        }
+        CHECKHR(device_->QueryInterface(IID_PPV_ARGS(&info_queue)));
+        info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
+        info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
+        info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
+
 #endif
         // Query support for MSAA
         ms_lv_.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         ms_lv_.SampleCount = 4;
         ms_lv_.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
         ms_lv_.NumQualityLevels = 0;
-        device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &ms_lv_, sizeof(ms_lv_));
+        CHECKHR(device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &ms_lv_, sizeof(ms_lv_)));
 
         // Create a commmand queue with direct list
         D3D12_COMMAND_QUEUE_DESC qd{};
@@ -112,8 +114,8 @@ public:
         sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // format: RGBA32
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; // use for render target
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // discard pixels when swap
-        if (p.enable_msaa_4x) sd.SampleDesc.Count = 4;
-        else sd.SampleDesc.Count = 1;
+        //if (p.enable_msaa_4x) sd.SampleDesc.Count = 4;
+        sd.SampleDesc.Count = 1;
         sd.Scaling = DXGI_SCALING_NONE; // no scaling, just for debug
 
         // Create swapchain with lower level, then convert to higher level to support GetCurrentBackBufferIndex
@@ -138,6 +140,30 @@ public:
             handle.ptr += rtv_size_;
         }
 
+        if (p.enable_msaa_4x) {
+            auto msaa_rt_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            auto msaa_rt_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, p.width, p.height, 1, 1, 4);
+            msaa_rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            D3D12_CLEAR_VALUE msaa_clear_value = {};
+            memcpy(&msaa_clear_value.Color, p.clear_color, sizeof(float) * 4);
+            msaa_clear_value.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            device_->CreateCommittedResource(
+                &msaa_rt_prop,
+                D3D12_HEAP_FLAG_NONE,
+                &msaa_rt_desc,
+                D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                &msaa_clear_value,
+                IID_PPV_ARGS(&msaa_rt_));
+            D3D12_DESCRIPTOR_HEAP_DESC msaa_rtv_heap_desc{};
+            msaa_rtv_heap_desc.NumDescriptors = 1;
+            msaa_rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+            device_->CreateDescriptorHeap(&msaa_rtv_heap_desc, IID_PPV_ARGS(msaa_rtv_heap_.GetAddressOf()));
+            D3D12_RENDER_TARGET_VIEW_DESC msaa_rtv_desc;
+            msaa_rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            msaa_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+            device_->CreateRenderTargetView(msaa_rt_.Get(), &msaa_rtv_desc, msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+        }
+
         // Create depth/stencil buffer
         D3D12_RESOURCE_DESC depth_heap_desc = {};
         depth_heap_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -147,7 +173,7 @@ public:
         depth_heap_desc.DepthOrArraySize = 1;
         depth_heap_desc.MipLevels = 1;
         depth_heap_desc.Format = DXGI_FORMAT_D32_FLOAT;
-        depth_heap_desc.SampleDesc.Count = 1;
+        depth_heap_desc.SampleDesc.Count = p.enable_msaa_4x ? 4 : 1;
         depth_heap_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         depth_heap_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         auto depth_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
@@ -185,13 +211,13 @@ public:
         index_buffer_.Reset();
         auto vertex_heap_prop= CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto vertex_heap_desc = CD3DX12_RESOURCE_DESC::Buffer(vertices_sz);
-        device_->CreateCommittedResource(
+        CHECKHR(device_->CreateCommittedResource(
             &vertex_heap_prop,
             D3D12_HEAP_FLAG_NONE,
             &vertex_heap_desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
-            IID_PPV_ARGS(&vertex_buffer_));
+            IID_PPV_ARGS(&vertex_buffer_)));
 
         auto vertex_heap_upload_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto vertex_heap_upload_desc = CD3DX12_RESOURCE_DESC::Buffer(vertices_sz);
@@ -214,7 +240,6 @@ public:
         vertex_buffer_view_.StrideInBytes = sizeof(V);
         vertex_buffer_view_.SizeInBytes = vertices_sz;
 
-
         auto index_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto index_heap_desc = CD3DX12_RESOURCE_DESC::Buffer(indices_sz);
 
@@ -222,7 +247,7 @@ public:
             &index_heap_prop,
             D3D12_HEAP_FLAG_NONE,
             &index_heap_desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&index_buffer_));
 
@@ -245,8 +270,20 @@ public:
         index_buffer_view_.BufferLocation = index_buffer_->GetGPUVirtualAddress();
         index_buffer_view_.SizeInBytes = indices_sz;
         index_buffer_view_.Format = DXGI_FORMAT_R16_UINT;
-
+        cmd_alloc_->Reset();
         cmd_list_->Reset(cmd_alloc_.Get(), nullptr);
+        D3D12_RESOURCE_BARRIER pre_copy[2] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                vertex_buffer_.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST),
+
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                index_buffer_.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST)
+        };
+        cmd_list_->ResourceBarrier(2, pre_copy);
         cmd_list_->CopyResource(vertex_buffer_.Get(), vertex_upload_.Get());
         cmd_list_->CopyResource(index_buffer_.Get(), index_upload_.Get());
 
@@ -257,11 +294,9 @@ public:
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
 
         cmd_list_->ResourceBarrier(2, barriers);
-
         cmd_list_->Close();
         ID3D12CommandList* lists[] = { cmd_list_.Get() };
         cmd_queue_->ExecuteCommandLists(1, lists);
-
         wait();
         vertex_upload_.Reset();
         index_upload_.Reset();
@@ -311,7 +346,8 @@ public:
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.NumRenderTargets = 1;
         pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        pso.SampleDesc.Count = 1;
+        pso.SampleDesc.Count = param_.enable_msaa_4x ? 4 : 1;
+        pso.SampleDesc.Quality = 0;
         pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pso_));
     }
@@ -327,8 +363,7 @@ public:
         }
     }
 
-    void render()
-    {
+    void render() {
         wait(); // Wait for GPU processing and reset command list
         cmd_alloc_->Reset();
         cmd_list_->Reset(cmd_alloc_.Get(), pso_.Get());
@@ -339,22 +374,33 @@ public:
         cmd_list_->RSSetViewports(1, &viewport);
         cmd_list_->RSSetScissorRects(1, &scissor_rect);
 
-        // Set backbuffer to Render Target
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            buffers_[fb_index_].Get(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        cmd_list_->ResourceBarrier(1, &barrier);
+        if (param_.enable_msaa_4x) {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(msaa_rt_.Get(),
+    D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            cmd_list_->ResourceBarrier(1, &barrier);
+        } else {
+            // Set backbuffer to Render Target
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                buffers_[fb_index_].Get(),
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+            cmd_list_->ResourceBarrier(1, &barrier);
+        }
 
         // Offset and get descriptor
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
         rtv.ptr += fb_index_ * rtv_size_;
-
-        // Clear Render Target and Depth View
         cmd_list_->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-        cmd_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        cmd_list_->ClearRenderTargetView(rtv, param_.clear_color, 0, nullptr);
+        if (param_.enable_msaa_4x) {
+            D3D12_CPU_DESCRIPTOR_HANDLE msaa_rtv = msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+            cmd_list_->OMSetRenderTargets(1, &msaa_rtv, FALSE, &dsv);
+            cmd_list_->ClearRenderTargetView(msaa_rtv, param_.clear_color, 0, nullptr);
+        } else {
+            // Clear Render Target
+            cmd_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+            cmd_list_->ClearRenderTargetView(rtv, param_.clear_color, 0, nullptr);
+        }
 
         cmd_list_->SetGraphicsRootSignature(root_sig_.Get());
         cmd_list_->SetGraphicsRootConstantBufferView(0, constant_buffer_->GetGPUVirtualAddress());
@@ -365,9 +411,31 @@ public:
         cmd_list_->IASetIndexBuffer(&index_buffer_view_);
         // Draw call
         cmd_list_->DrawIndexedInstanced(36, 1, 0, 0, 0);
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        cmd_list_->ResourceBarrier(1, &barrier);
+        if (param_.enable_msaa_4x) {
+            D3D12_RESOURCE_BARRIER barriers[2] = {
+                CD3DX12_RESOURCE_BARRIER::Transition(
+                    msaa_rt_.Get(),
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_RESOLVE_SOURCE),
+                CD3DX12_RESOURCE_BARRIER::Transition(
+                    buffers_[fb_index_].Get(),
+                    D3D12_RESOURCE_STATE_PRESENT,
+                    D3D12_RESOURCE_STATE_RESOLVE_DEST)
+                };
+            cmd_list_->ResourceBarrier(2, barriers);
+            cmd_list_->ResolveSubresource(buffers_[fb_index_].Get(), 0, msaa_rt_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                buffers_[fb_index_].Get(),
+                D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                D3D12_RESOURCE_STATE_PRESENT);
+            cmd_list_->ResourceBarrier(1, &barrier);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                buffers_[fb_index_].Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT);
+            cmd_list_->ResourceBarrier(1, &barrier);
+        }
         cmd_list_->Close();
         ID3D12CommandList* lists[] = { cmd_list_.Get() };
         // Execute and present
