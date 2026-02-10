@@ -1,0 +1,15 @@
+cbuffer Scene : register(b0)
+{
+    float4 u_GlobalColor[6];
+    row_major float4x4 u_Rotation;
+};
+
+struct PSIn {
+    float4 pos : SV_POSITION;
+    float4 col : COLOR;
+};
+
+float4 main(PSIn i) : SV_TARGET
+{
+    return i.col;
+}
