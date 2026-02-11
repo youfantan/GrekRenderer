@@ -1,15 +1,28 @@
 cbuffer Scene : register(b0)
 {
-    float4 u_GlobalColor[6];
-    row_major float4x4 u_Rotation;
+    float4 u_GlobalColor;
+    float4 u_LightPos;
+    float4 u_LightColor;
+    float4 u_Ambient;
+    row_major float4x4 u_WorldMatrix;
+    row_major float4x4 u_ViewMatrix;
 };
 
 struct PSIn {
     float4 pos : SV_POSITION;
-    float4 col : COLOR;
+    float4 rpos : POSITION;
+    float2 uv  : TEXCOORD;
+    float3 normal : NORMAL;
 };
 
 float4 main(PSIn i) : SV_TARGET
 {
-    return i.col;
+    float3 N = normalize(i.normal);
+    float3 L = normalize(i.rpos.xyz - u_LightPos.xyz);
+    //float3 L = normalize(u_LightDir.xyz);
+    float diffuse_intensity = saturate(dot(N, L));
+    float3 diffuse = diffuse_intensity * u_LightColor.rgb;
+    float3 final_light = u_Ambient.rgb + diffuse;
+    float3 final_color = u_GlobalColor.rgb * final_light;
+    return float4(final_color, u_GlobalColor.a);
 }

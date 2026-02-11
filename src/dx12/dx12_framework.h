@@ -205,7 +205,7 @@ public:
     }
 
     template<typename V>
-    void apply_ia(V* vertices, size_t vertices_sz, void* indices, size_t indices_sz) {
+    void apply_ia(const V* vertices, size_t vertices_sz, const void* indices, size_t indices_sz) {
         wait();
         vertex_buffer_.Reset();
         index_buffer_.Reset();

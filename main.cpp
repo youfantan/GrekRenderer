@@ -22,7 +22,7 @@ bool press_space = false;
 bool press_shift = false;
 bool press_alt = false;
 float theta = 0.0f;
-float speed = 0.01f;
+float speed = 0.005f;
 float omega = 0.01f;
 float camera_yaw = 90.0f;
 float camera_pitch = 0.0f;
@@ -91,20 +91,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 }
 
 struct SceneData {
-    float color[6][4];
+    float color[4];
+    float light_pos[4];
+    float light_color[4];
+    float ambient[4];
     float world_matrix[4][4];
-    float padding[24];
+    float view_matrix[4][4];
+    float padding[16];
 };
 
-SceneData scene_data{
-    .color = {
-        {0.3f, 0.3f, 0.3f, 1.0f},
-        {0.2f, 1.0f, 0.3f, 1.0f},
-        {0.6f, 0.4f, 0.8f, 1.0f},
-        {1.0f, 0.6f, 0.2f, 1.0f},
-        {1.0f, 0.2f, 1.0f, 1.0f},
-        {0.1f, 0.5f, 0.2f, 1.0f}
-    }
+SceneData scene_data {
+    .color = {0.7f, 0.7f, 0.7f, 1.0f},
+    .light_pos = { 1.0f, 1.0f, 0.0f, 0.0f},
+    .light_color = {1.0f, 1.0f, 1.0f, 1.0f},
+    .ambient = {0.2f, 0.2f, 0.2f, 0.2f}
 };
 
 XMFLOAT3 position = {0.0f, 0.0f, 2.0f};
@@ -184,12 +184,36 @@ void update(float delta) {
     matrix_apply_View(position, forward);
     matrix_apply_Projection();
     XMMATRIX wvp = world * view * projection;
-    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(scene_data.world_matrix), wvp);
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(scene_data.world_matrix), world);
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(scene_data.view_matrix), wvp);
 }
 
+struct Vertex {
+    float x, y, z;
+    float u, v;
+    float nx, ny, nz;
+};
+
+void generate_normal(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+    for (uint32_t i = 0; i < indices.size(); i+= 3) {
+        Vertex& a = vertices[indices[i]];
+        Vertex& b = vertices[indices[i + 1]];
+        Vertex& c = vertices[indices[i + 2]];
+        XMVECTOR d = XMVectorSet(a.x - b.x, a.y - b.y, a.z - b.z, 0.0f);
+        XMVECTOR e = XMVectorSet(c.x - b.x, c.y - b.y, c.z - b.z, 0.0f);
+        XMVECTOR v_normal = XMVector3Cross(d, e);
+        XMVector3Normalize(v_normal);
+        XMFLOAT3 normal {};
+        XMStoreFloat3(&normal, v_normal);
+
+        memcpy(&a.nx, &normal, sizeof(XMFLOAT3));
+        memcpy(&b.nx, &normal, sizeof(XMFLOAT3));
+        memcpy(&c.nx, &normal, sizeof(XMFLOAT3));
+    }
+}
+
+
 int main() {
-    obj_loader loader;
-    loader.load_model("columbia.obj");
     win32_window window(L"Grek Renderer", WS_OVERLAPPEDWINDOW, 1280, 720, WindowProc);
     fps_counter fpsc;
     hwnd = window.handle();
@@ -203,8 +227,39 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    obj_loader::vertex* vertices = loader.vertices().data();
-    uint32_t* indices = loader.indices().data();
+    std::vector<Vertex> vertices = {
+        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+
+        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+
+        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+
+        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
+        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+
+        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0}
+    };
+
+    std::vector<uint32_t> indices = {
+        0, 1, 2,
+        3, 4, 5,
+        6, 7, 8,
+        9, 10, 11,
+        12, 13, 14,
+        12, 14, 15
+    };
+    generate_normal(vertices, indices);
+
 
     dx12_framework::dx12_inital_param_t param{
         .width = 1280,
@@ -216,6 +271,8 @@ int main() {
     dx12_framework framework(param);
     D3D12_INPUT_ELEMENT_DESC il[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
     CD3DX12_ROOT_PARAMETER root_params[1];
     root_params[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -227,7 +284,7 @@ int main() {
         .vertex_shader = triangle_vs.value(),
         .fragment_shader = triangle_ps.value()
     };
-    framework.apply_ia(vertices, loader.vertices().size() * sizeof(obj_loader::vertex), indices, loader.indices().size() * sizeof(uint32_t));
+    framework.apply_ia(vertices.data(), vertices.size() * sizeof(Vertex), indices.data(), indices.size() * sizeof(uint32_t));
     framework.apply_cb(&scene_data);
     framework.apply_pso(pso_p);
     MSG msg = {};
@@ -236,7 +293,7 @@ int main() {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            framework.render(loader.indices().size());
+            framework.render(indices.size());
             auto delta = fpsc.delta_ms();
             update(delta);
             framework.apply_cb(&scene_data);
