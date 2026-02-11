@@ -8,6 +8,9 @@ cbuffer Scene : register(b0)
     row_major float4x4 u_ViewMatrix;
 };
 
+Texture2D g_Texture : register(t0);
+SamplerState g_Sampler : register(s0);
+
 struct PSIn {
     float4 pos : SV_POSITION;
     float4 rpos : POSITION;
@@ -23,6 +26,7 @@ float4 main(PSIn i) : SV_TARGET
     float diffuse_intensity = saturate(dot(N, L));
     float3 diffuse = diffuse_intensity * u_LightColor.rgb;
     float3 final_light = u_Ambient.rgb + diffuse;
-    float3 final_color = u_GlobalColor.rgb * final_light;
+    float4 tex_color = g_Texture.Sample(g_Sampler, i.uv);
+    float3 final_color = tex_color.rgb * final_light;
     return float4(final_color, u_GlobalColor.a);
 }

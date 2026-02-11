@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <stb_image.h>
 
 #include "../win32/common.h"
 
@@ -30,6 +31,8 @@ public:
     using pso_params_t = struct {
         D3D12_ROOT_PARAMETER* root_params;
         uint32_t root_params_sz;
+        D3D12_STATIC_SAMPLER_DESC* static_samplers;
+        uint32_t static_samplers_sz;
         D3D12_INPUT_ELEMENT_DESC* ie_descs;
         uint32_t ie_descs_sz;
         ComPtr<ID3DBlob> vertex_shader;
@@ -49,12 +52,14 @@ private:
     ComPtr<ID3D12DescriptorHeap> rtv_heap_;
     ComPtr<ID3D12DescriptorHeap> msaa_rtv_heap_;
     ComPtr<ID3D12DescriptorHeap> dsv_heap_;
+    ComPtr<ID3D12DescriptorHeap> srv_heap_;
     ComPtr<ID3D12Resource> vertex_buffer_;
     ComPtr<ID3D12Resource> vertex_upload_;
     ComPtr<ID3D12Resource> index_buffer_;
     ComPtr<ID3D12Resource> index_upload_;
     ComPtr<ID3D12Resource> constant_buffer_;
     ComPtr<ID3D12Resource> depth_buffer_;
+    ComPtr<ID3D12Resource> tex_buffer_;
     ComPtr<IDXGIAdapter> adapter_;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view_;
     D3D12_INDEX_BUFFER_VIEW index_buffer_view_;
@@ -102,9 +107,9 @@ public:
         // Create a commmand queue with direct list
         D3D12_COMMAND_QUEUE_DESC qd{};
         qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&cmd_queue_));
-        device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_alloc_));
-        device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_alloc_.Get(), nullptr, IID_PPV_ARGS(&cmd_list_));
+        CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&cmd_queue_)));
+        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_alloc_)));
+        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_alloc_.Get(), nullptr, IID_PPV_ARGS(&cmd_list_)));
 
         // Create swapchain
         DXGI_SWAP_CHAIN_DESC1 sd{};
@@ -120,22 +125,22 @@ public:
 
         // Create swapchain with lower level, then convert to higher level to support GetCurrentBackBufferIndex
         ComPtr<IDXGISwapChain1> sc;
-        factory_->CreateSwapChainForHwnd(cmd_queue_.Get(), p.hwnd, &sd, nullptr, nullptr, &sc);
-        sc.As(&swapchain_);
+        CHECKHR(factory_->CreateSwapChainForHwnd(cmd_queue_.Get(), p.hwnd, &sd, nullptr, nullptr, &sc));
+        CHECKHR(sc.As(&swapchain_));
         fb_index_ = swapchain_->GetCurrentBackBufferIndex();
 
         // Create RTV Heap for swapchain buffers
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.NumDescriptors = 2;
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_));
+        CHECKHR(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)));
         // Query RTV size
         rtv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         // Create a RTV for each swapchain buffer
         auto handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
         for (int i = 0; i < 2; ++i) {
-            swapchain_->GetBuffer(i, IID_PPV_ARGS(&buffers_[i]));
+            CHECKHR(swapchain_->GetBuffer(i, IID_PPV_ARGS(&buffers_[i])));
             device_->CreateRenderTargetView(buffers_[i].Get(), nullptr, handle);
             handle.ptr += rtv_size_;
         }
@@ -147,17 +152,17 @@ public:
             D3D12_CLEAR_VALUE msaa_clear_value = {};
             memcpy(&msaa_clear_value.Color, p.clear_color, sizeof(float) * 4);
             msaa_clear_value.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            device_->CreateCommittedResource(
+            CHECKHR(device_->CreateCommittedResource(
                 &msaa_rt_prop,
                 D3D12_HEAP_FLAG_NONE,
                 &msaa_rt_desc,
                 D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
                 &msaa_clear_value,
-                IID_PPV_ARGS(&msaa_rt_));
+                IID_PPV_ARGS(&msaa_rt_)));
             D3D12_DESCRIPTOR_HEAP_DESC msaa_rtv_heap_desc{};
             msaa_rtv_heap_desc.NumDescriptors = 1;
             msaa_rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-            device_->CreateDescriptorHeap(&msaa_rtv_heap_desc, IID_PPV_ARGS(msaa_rtv_heap_.GetAddressOf()));
+            CHECKHR(device_->CreateDescriptorHeap(&msaa_rtv_heap_desc, IID_PPV_ARGS(msaa_rtv_heap_.GetAddressOf())));
             D3D12_RENDER_TARGET_VIEW_DESC msaa_rtv_desc;
             msaa_rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
             msaa_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
@@ -183,23 +188,31 @@ public:
         opt_clear.DepthStencil.Depth = 1.0f;
         opt_clear.DepthStencil.Stencil = 0;
 
-        device_->CreateCommittedResource(
+        CHECKHR(device_->CreateCommittedResource(
             &depth_heap_prop,
             D3D12_HEAP_FLAG_NONE,
             &depth_heap_desc,
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
             &opt_clear,
             IID_PPV_ARGS(&depth_buffer_)
-        );
+        ));
 
         // Create DSV Heap for depth buffer
         D3D12_DESCRIPTOR_HEAP_DESC dsv_desc = {};
         dsv_desc.NumDescriptors = 1;
         dsv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         dsv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        device_->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsv_heap_));
+        CHECKHR(device_->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsv_heap_)));
         device_->CreateDepthStencilView(depth_buffer_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
-        device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
+
+        D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
+        srv_heap_desc.NumDescriptors = 1;
+        srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        CHECKHR(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap_)));
+
+
+        CHECKHR(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)));
         fence_ev_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
         cmd_list_->Close();
     }
@@ -222,17 +235,17 @@ public:
         auto vertex_heap_upload_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto vertex_heap_upload_desc = CD3DX12_RESOURCE_DESC::Buffer(vertices_sz);
 
-        device_->CreateCommittedResource(
+        CHECKHR(device_->CreateCommittedResource(
             &vertex_heap_upload_prop,
             D3D12_HEAP_FLAG_NONE,
             &vertex_heap_upload_desc,
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
-            IID_PPV_ARGS(&vertex_upload_));
+            IID_PPV_ARGS(&vertex_upload_)));
 
         UINT8* vertex_mapping;
         CD3DX12_RANGE readRange(0, 0);
-        vertex_upload_->Map(0, &readRange, reinterpret_cast<void**>(&vertex_mapping));
+        CHECKHR(vertex_upload_->Map(0, &readRange, reinterpret_cast<void**>(&vertex_mapping)));
         memcpy(vertex_mapping, vertices, vertices_sz);
         vertex_upload_->Unmap(0, nullptr);
 
@@ -243,35 +256,35 @@ public:
         auto index_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto index_heap_desc = CD3DX12_RESOURCE_DESC::Buffer(indices_sz);
 
-        device_->CreateCommittedResource(
+        CHECKHR(device_->CreateCommittedResource(
             &index_heap_prop,
             D3D12_HEAP_FLAG_NONE,
             &index_heap_desc,
             D3D12_RESOURCE_STATE_COMMON,
             nullptr,
-            IID_PPV_ARGS(&index_buffer_));
+            IID_PPV_ARGS(&index_buffer_)));
 
         auto index_heap_upload_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto index_heap_upload_desc = CD3DX12_RESOURCE_DESC::Buffer(indices_sz);
 
-        device_->CreateCommittedResource(
+        CHECKHR(device_->CreateCommittedResource(
             &index_heap_upload_prop,
             D3D12_HEAP_FLAG_NONE,
             &index_heap_upload_desc,
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
-            IID_PPV_ARGS(&index_upload_));
+            IID_PPV_ARGS(&index_upload_)));
 
         UINT8* index_mapping;
-        index_upload_->Map(0, &readRange, reinterpret_cast<void**>(&index_mapping));
+        CHECKHR(index_upload_->Map(0, &readRange, reinterpret_cast<void**>(&index_mapping)));
         memcpy(index_mapping, indices, indices_sz);
         index_upload_->Unmap(0, nullptr);
 
         index_buffer_view_.BufferLocation = index_buffer_->GetGPUVirtualAddress();
         index_buffer_view_.SizeInBytes = indices_sz;
         index_buffer_view_.Format = DXGI_FORMAT_R32_UINT;
-        cmd_alloc_->Reset();
-        cmd_list_->Reset(cmd_alloc_.Get(), nullptr);
+        CHECKHR(cmd_alloc_->Reset());
+        CHECKHR(cmd_list_->Reset(cmd_alloc_.Get(), nullptr));
         D3D12_RESOURCE_BARRIER pre_copy[2] = {
             CD3DX12_RESOURCE_BARRIER::Transition(
                 vertex_buffer_.Get(),
@@ -294,7 +307,7 @@ public:
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
 
         cmd_list_->ResourceBarrier(2, barriers);
-        cmd_list_->Close();
+        CHECKHR(cmd_list_->Close());
         ID3D12CommandList* lists[] = { cmd_list_.Get() };
         cmd_queue_->ExecuteCommandLists(1, lists);
         wait();
@@ -311,27 +324,27 @@ public:
             auto constant_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
             auto constant_heap_desc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(C));
 
-            device_->CreateCommittedResource(
+            CHECKHR(device_->CreateCommittedResource(
                 &constant_heap_prop,
                 D3D12_HEAP_FLAG_NONE,
                 &constant_heap_desc,
                 D3D12_RESOURCE_STATE_GENERIC_READ,
                 nullptr,
-                IID_PPV_ARGS(&constant_buffer_));
+                IID_PPV_ARGS(&constant_buffer_)));
             cb_created_ = true;
         }
         UINT8* cb_mapping;
-        constant_buffer_->Map(0, nullptr, reinterpret_cast<void**>(&cb_mapping));
+        CHECKHR(constant_buffer_->Map(0, nullptr, reinterpret_cast<void**>(&cb_mapping)));
         memcpy(cb_mapping, c, sizeof(C));
         constant_buffer_->Unmap(0, nullptr);
     }
 
     void apply_pso(const pso_params_t& p) {
         CD3DX12_ROOT_SIGNATURE_DESC rs{};
-        rs.Init(p.root_params_sz, p.root_params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rs.Init(p.root_params_sz, p.root_params, p.static_samplers_sz, p.static_samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
         ComPtr<ID3DBlob> rsBlob, errBlob;
-        D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &errBlob);
-        device_->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&root_sig_));
+        CHECKHR(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &errBlob));
+        CHECKHR(device_->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&root_sig_)));
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
         pso.InputLayout = { p.ie_descs, p.ie_descs_sz};
         pso.pRootSignature = root_sig_.Get();
@@ -349,7 +362,74 @@ public:
         pso.SampleDesc.Count = param_.enable_msaa_4x ? 4 : 1;
         pso.SampleDesc.Quality = 0;
         pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pso_));
+        CHECKHR(device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pso_)));
+    }
+
+    using tex_param_t = struct {
+        uint32_t width;
+        uint32_t height;
+        uint8_t* tex_data;
+    };
+
+    void apply_tex(tex_param_t& p) {
+        wait();
+        D3D12_RESOURCE_DESC tex_desc {};
+        tex_desc.MipLevels = 1;
+        tex_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        tex_desc.Width = p.width;
+        tex_desc.Height = p.height;
+        tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        tex_desc.DepthOrArraySize = 1;
+        tex_desc.SampleDesc.Count = 1;
+        tex_desc.SampleDesc.Quality = 0;
+        tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        D3D12_HEAP_PROPERTIES tex_prop = CD3DX12_HEAP_PROPERTIES((D3D12_HEAP_TYPE_DEFAULT));
+        CHECKHR(device_->CreateCommittedResource(
+            &tex_prop,
+            D3D12_HEAP_FLAG_NONE,
+            &tex_desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&tex_buffer_)));
+
+        const UINT64 buffer_size = GetRequiredIntermediateSize(tex_buffer_.Get(), 0, 1);
+        auto tex_upload_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto tex_upload_desc = CD3DX12_RESOURCE_DESC::Buffer(buffer_size);
+        ComPtr<ID3D12Resource> tex_upload;
+        CHECKHR(device_->CreateCommittedResource(
+            &tex_upload_prop,
+            D3D12_HEAP_FLAG_NONE,
+            &tex_upload_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&tex_upload)));
+
+        CHECKHR(cmd_alloc_->Reset());
+        CHECKHR(cmd_list_->Reset(cmd_alloc_.Get(), nullptr));
+        D3D12_RESOURCE_BARRIER pre_copy = CD3DX12_RESOURCE_BARRIER::Transition(
+                tex_buffer_.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        cmd_list_->ResourceBarrier(1, &pre_copy);
+        D3D12_SUBRESOURCE_DATA textureData = {};
+        textureData.pData = p.tex_data;
+        textureData.RowPitch = p.width * 4;
+        textureData.SlicePitch = textureData.RowPitch * p.height;
+        UpdateSubresources(cmd_list_.Get(), tex_buffer_.Get(), tex_upload.Get(), 0, 0, 1, &textureData);
+        D3D12_RESOURCE_BARRIER after_copy = CD3DX12_RESOURCE_BARRIER::Transition(tex_buffer_.Get(),D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmd_list_->ResourceBarrier(1, &after_copy);
+        CHECKHR(cmd_list_->Close());
+        ID3D12CommandList* lists[] = { cmd_list_.Get() };
+        cmd_queue_->ExecuteCommandLists(1, lists);
+        wait();
+        tex_upload.Reset();
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.Format = tex_desc.Format;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv_desc.Texture2D.MipLevels = 1;
+        device_->CreateShaderResourceView(tex_buffer_.Get(), &srv_desc, srv_heap_->GetCPUDescriptorHandleForHeapStart());
     }
 
     void wait() {
@@ -365,8 +445,8 @@ public:
 
     void render(uint32_t indices) {
         wait(); // Wait for GPU processing and reset command list
-        cmd_alloc_->Reset();
-        cmd_list_->Reset(cmd_alloc_.Get(), pso_.Get());
+        CHECKHR(cmd_alloc_->Reset());
+        CHECKHR(cmd_list_->Reset(cmd_alloc_.Get(), pso_.Get()));
 
         // Set viewport and scissor rect
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)param_.width, (float)param_.height, 0.0f, 1.0f };
@@ -401,9 +481,11 @@ public:
             cmd_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
             cmd_list_->ClearRenderTargetView(rtv, param_.clear_color, 0, nullptr);
         }
-
+        ID3D12DescriptorHeap* heaps[] = { srv_heap_.Get() };
+        cmd_list_->SetDescriptorHeaps(_countof(heaps), heaps);
         cmd_list_->SetGraphicsRootSignature(root_sig_.Get());
         cmd_list_->SetGraphicsRootConstantBufferView(0, constant_buffer_->GetGPUVirtualAddress());
+        cmd_list_->SetGraphicsRootDescriptorTable(1, srv_heap_->GetGPUDescriptorHandleForHeapStart());
         // Use triangle Topology
         cmd_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         // Load vertices and indices
@@ -436,11 +518,11 @@ public:
                 D3D12_RESOURCE_STATE_PRESENT);
             cmd_list_->ResourceBarrier(1, &barrier);
         }
-        cmd_list_->Close();
+        CHECKHR(cmd_list_->Close());
         ID3D12CommandList* lists[] = { cmd_list_.Get() };
         // Execute and present
         cmd_queue_->ExecuteCommandLists(1, lists);
-        swapchain_->Present(1, 0);
+        CHECKHR(swapchain_->Present(1, 0));
         fb_index_ = swapchain_->GetCurrentBackBufferIndex();
     }
 
@@ -516,7 +598,7 @@ public:
         }
         for (auto& shader : std::filesystem::directory_iterator(shaders)) {
             if (shader.is_regular_file()) {
-                std::cout << std::format("loading vertex shader {}. ", shader.path().filename().string());
+                std::cout << std::format("loading shader {}. ", shader.path().filename().string());
                 std::filesystem::directory_entry shader_cache("shaders/cache/" + shader.path().filename().string());
                 shader_type typ;
                 std::string hlsl_typ_ver;
@@ -566,4 +648,42 @@ public:
         }
         return std::nullopt;
     }
+};
+
+class texture_manager {
+private:
+    std::map<std::string, dx12_framework::tex_param_t> textures_map;
+
+public:
+    void load_textures() {
+        std::filesystem::directory_entry textures("textures");
+        if (!textures.exists()) {
+            std::cout << "textures not exists, exit" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        for (auto& texture : std::filesystem::directory_iterator(textures)) {
+            if (texture.is_regular_file() && texture.path().string().ends_with(".jpg")) {
+                std::cout << std::format("loading texture {}", texture.path().filename().string()) << std::endl;
+                int width, height, channels;
+                unsigned char* data = stbi_load(texture.path().string().c_str(), &width, &height, &channels, 4);
+                if (data == nullptr) {
+                    std::cout << std::format("failed to load texture {}, exit", texture.path().filename().string()) << std::endl;
+                    exit(EXIT_FAILURE);
+                }
+                textures_map[texture.path().filename().string()] = {
+                    .width = static_cast<uint32_t>(width),
+                    .height = static_cast<uint32_t>(height),
+                    .tex_data = data
+                };
+            }
+        }
+    }
+
+    std::optional<dx12_framework::tex_param_t> get(const std::string& tex_name) {
+        if (textures_map.contains(tex_name)) {
+            return textures_map[tex_name];
+        }
+        return std::nullopt;
+    }
+
 };

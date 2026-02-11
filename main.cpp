@@ -1,6 +1,7 @@
 #ifndef UNICODE
 #define UNICODE
 #endif
+#define STB_IMAGE_IMPLEMENTATION
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -12,6 +13,7 @@
 #include "src/dx12/dx12_framework.h"
 #include "src/win32/common.h"
 #include "src/win32/window.h"
+
 
 constexpr double PI = 3.1415926f;
 bool press_w = false;
@@ -218,36 +220,44 @@ int main() {
     fps_counter fpsc;
     hwnd = window.handle();
     ShowCursor(FALSE);
-    shader_manager mgr;
-    mgr.load_shaders();
-    auto triangle_vs = mgr.get("triangle.vs");
-    auto triangle_ps = mgr.get("triangle.ps");
+    shader_manager shader_mgr;
+    shader_mgr.load_shaders();
+    auto triangle_vs = shader_mgr.get("triangle.vs");
+    auto triangle_ps = shader_mgr.get("triangle.ps");
+    texture_manager tex_mgr;
+    tex_mgr.load_textures();
+    auto basic = tex_mgr.get("13551.jpg");
     if (!triangle_vs.has_value() || !triangle_ps.has_value()) {
         std::cout << "triangle shader not exists" << std::endl;
         exit(EXIT_FAILURE);
     }
 
+    if (!basic.has_value()) {
+        std::cout << "basic texture not exists" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
     std::vector<Vertex> vertices = {
-        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
-        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
+        {-0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0, 0, 0},
 
-        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
+        { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 1.0f, 1.0f, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0, 0, 0},
 
-        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
-        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+        { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 1.0f, 1.0f, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0, 0, 0},
 
-        { 0.0f,  0.5f,  0.0f, 0, 0, 0, 0, 0},
-        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
-        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
+        { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
+        {-0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0, 0, 0},
 
-        {-0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f, -0.5f, 0, 0, 0, 0, 0},
-        { 0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0},
-        {-0.5f, -0.5f,  0.5f, 0, 0, 0, 0, 0}
+        {-0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0, 0, 0},
+        { 0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0, 0},
+        {-0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 0, 0, 0}
     };
 
     std::vector<uint32_t> indices = {
@@ -274,11 +284,19 @@ int main() {
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
-    CD3DX12_ROOT_PARAMETER root_params[1];
+    CD3DX12_ROOT_PARAMETER root_params[2];
     root_params[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    CD3DX12_DESCRIPTOR_RANGE tex_range;
+    tex_range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    root_params[1].InitAsDescriptorTable(1, &tex_range, D3D12_SHADER_VISIBILITY_PIXEL);
+    CD3DX12_STATIC_SAMPLER_DESC samplers[1] = {
+        CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR)
+    };
     dx12_framework::pso_params_t pso_p {
         .root_params = root_params,
         .root_params_sz = _countof(root_params),
+        .static_samplers = samplers,
+        .static_samplers_sz = _countof(samplers),
         .ie_descs = il,
         .ie_descs_sz = _countof(il),
         .vertex_shader = triangle_vs.value(),
@@ -286,6 +304,7 @@ int main() {
     };
     framework.apply_ia(vertices.data(), vertices.size() * sizeof(Vertex), indices.data(), indices.size() * sizeof(uint32_t));
     framework.apply_cb(&scene_data);
+    framework.apply_tex(basic.value());
     framework.apply_pso(pso_p);
     MSG msg = {};
     while (msg.message != WM_QUIT) {
