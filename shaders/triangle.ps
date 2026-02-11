@@ -4,6 +4,7 @@ cbuffer Scene : register(b0)
     float4 u_LightPos;
     float4 u_LightColor;
     float4 u_Ambient;
+    float4 u_CameraPos;
     row_major float4x4 u_WorldMatrix;
     row_major float4x4 u_ViewMatrix;
 };
@@ -22,11 +23,18 @@ float4 main(PSIn i) : SV_TARGET
 {
     float3 N = normalize(i.normal);
     float3 L = normalize(i.rpos.xyz - u_LightPos.xyz);
-    //float3 L = normalize(u_LightDir.xyz);
+    float3 V = normalize(u_CameraPos.xyz - i.rpos.xyz);
+    float3 R = reflect(L, N);
+
     float diffuse_intensity = saturate(dot(N, L));
     float3 diffuse = diffuse_intensity * u_LightColor.rgb;
-    float3 final_light = u_Ambient.rgb + diffuse;
+
+    float specular_intensity = pow(saturate(dot(V, R)), 128.0f);
+    float3 specular = specular_intensity * u_LightColor.rgb;
+
+    float3 final_light = diffuse + u_Ambient.rgb;
     float4 tex_color = g_Texture.Sample(g_Sampler, i.uv);
-    float3 final_color = tex_color.rgb * final_light;
+
+    float3 final_color = tex_color.rgb * final_light + specular;
     return float4(final_color, u_GlobalColor.a);
 }

@@ -25,7 +25,7 @@ bool press_shift = false;
 bool press_alt = false;
 float theta = 0.0f;
 float speed = 0.005f;
-float omega = 0.01f;
+float omega = 0.0005f;
 float camera_yaw = 90.0f;
 float camera_pitch = 0.0f;
 float sensitivity = 0.2f;
@@ -97,6 +97,7 @@ struct SceneData {
     float light_pos[4];
     float light_color[4];
     float ambient[4];
+    float camera_pos[4];
     float world_matrix[4][4];
     float view_matrix[4][4];
     float padding[16];
@@ -105,11 +106,12 @@ struct SceneData {
 SceneData scene_data {
     .color = {0.7f, 0.7f, 0.7f, 1.0f},
     .light_pos = { 1.0f, 1.0f, 0.0f, 0.0f},
-    .light_color = {1.0f, 1.0f, 1.0f, 1.0f},
-    .ambient = {0.2f, 0.2f, 0.2f, 0.2f}
+    .light_color = {1.0f, 0.9f, 0.9f, 1.0f},
+    .ambient = {0.2f, 0.2f, 0.2f, 1.0f},
+    .camera_pos = {0.0f, 0.0f, 0.0f},
 };
 
-XMFLOAT3 position = {0.0f, 0.0f, 2.0f};
+XMFLOAT3 position = {0.0f, 0.0f, 0.0f};
 XMFLOAT3 forward = {0.0f, 0.0f, 0.0f};
 
 XMMATRIX world;
@@ -178,11 +180,12 @@ void update(float delta) {
     XMStoreFloat3(&position, v_pos);
     XMVECTOR v_focus = XMVectorAdd(v_pos, v_fwd);
     XMStoreFloat3(&forward, v_focus);
+    memcpy(scene_data.camera_pos, &position.x, sizeof(XMFLOAT3));
 
     // Enable block to rotate
     theta += omega * delta;
 
-    matrix_apply_RTS(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f);
+    matrix_apply_RTS(0.0f, theta, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f);
     matrix_apply_View(position, forward);
     matrix_apply_Projection();
     XMMATRIX wvp = world * view * projection;
@@ -256,7 +259,7 @@ int main() {
 
         {-0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0, 0, 0},
         { 0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
-        { 0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0, 0},
+        { 0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0, 0, 0},
         {-0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 0, 0, 0}
     };
 
@@ -316,7 +319,7 @@ int main() {
             auto delta = fpsc.delta_ms();
             update(delta);
             framework.apply_cb(&scene_data);
-            window.set_title(std::format(L"Grek Renderer | {} FPS", fpsc.fps()));
+            window.set_title(std::format(L"Grek Renderer | {} FPS | x{:.2} y{:.2} z{:.2}", fpsc.fps(), position.x, position.y, position.z));
         }
     }
     framework.wait();

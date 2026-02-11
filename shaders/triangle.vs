@@ -4,6 +4,7 @@ cbuffer Scene : register(b0)
     float4 u_LightPos;
     float4 u_LightColor;
     float4 u_Ambient;
+    float4 u_CameraPos;
     row_major float4x4 u_WorldMatrix;
     row_major float4x4 u_ViewMatrix;
 };
