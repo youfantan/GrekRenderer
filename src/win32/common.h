@@ -16,13 +16,13 @@ inline std::optional<std::wstring> string_to_wstring(std::string_view src) {
     return dst;
 }
 
-class fps_counter {
+class FPSCounter {
 private:
     LARGE_INTEGER freq_;
     LARGE_INTEGER prev_;
     float fps_;
 public:
-    fps_counter() {
+    FPSCounter() {
         QueryPerformanceFrequency(&freq_);
         QueryPerformanceCounter(&prev_);
     }

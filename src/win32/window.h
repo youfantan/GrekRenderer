@@ -1,15 +1,10 @@
 #pragma once
 
-#include <functional>
 #include <stdexcept>
 #include <string>
-
-#ifndef UNICODE
-#define UNICODE
-#endif
-
 #include "Windows.h"
-class win32_window {
+
+class Win32Window {
 public:
     using callback_t = LRESULT(*)(HWND, UINT, WPARAM, LPARAM);
 private:
@@ -20,13 +15,13 @@ private:
     callback_t cb_;
     HWND handle_;
 public:
-    win32_window(std::wstring_view title, DWORD style, int32_t width, int32_t height, callback_t cb) : title_(title), style_(style), width_(width), height_(height), cb_(std::move(cb)) {
+    Win32Window(std::wstring_view title, DWORD style, int32_t width, int32_t height, void* app, callback_t cb) : title_(title), style_(style), width_(width), height_(height), cb_(std::move(cb)) {
         WNDCLASS wc = { };
         wc.lpfnWndProc = cb;
         wc.hInstance = GetModuleHandle(nullptr);
         wc.lpszClassName = title.data();
         RegisterClass(&wc);
-        HWND hwnd = CreateWindowEx(0,title.data(), title.data(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width_, height_, nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+        HWND hwnd = CreateWindowEx(0,title.data(), title.data(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width_, height_, nullptr, nullptr, GetModuleHandle(nullptr), app);
         handle_ = hwnd;
         if (hwnd == nullptr)
         {
