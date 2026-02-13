@@ -1,4 +1,5 @@
 #include "dx12_framework.h"
+#include "dx12_ui.h"
 #include "../win32/window.h"
 
 constexpr double PI = 3.1415926f;
@@ -15,7 +16,7 @@ float omega = 0.0005f;
 float camera_yaw = 90.0f;
 float camera_pitch = 0.0f;
 float sensitivity = 0.2f;
-bool is_active = false;
+bool is_active = true;
 
 struct alignas(256) Scene {
     float color[4];
@@ -58,17 +59,45 @@ XMMATRIX matrix_apply_Projection() {
     return XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.77f, 0.1f, 100.0f);
 }
 
-struct Vertex {
+struct PyramidVertex {
     float x, y, z;
     float u, v;
     float nx, ny, nz;
 };
 
-void GenerateNormal(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+struct TextVertex {
+    float x, y;
+    float u, v;
+};
+
+struct CharInfo {
+    uint32_t x;
+    uint32_t y;
+    uint32_t size;
+    float tex_x0;
+    float tex_y0;
+    float tex_x1;
+    float tex_x2;
+};
+
+CharInfo info[3] = {
+    {100, 100, 32, 0.0f, 0.0f, 1.0f, 1.0f},
+    {132, 100, 32, 0.0f, 0.0f, 1.0f, 1.0f},
+    {164, 100, 32, 0.0f, 0.0f, 1.0f, 1.0f},
+};
+
+struct alignas(256) ScreenInfo {
+    float width;
+    float height;
+};
+
+ScreenInfo scinfo;
+
+void GenerateNormal(std::vector<PyramidVertex>& vertices, std::vector<uint32_t>& indices) {
     for (uint32_t i = 0; i < indices.size(); i+= 3) {
-        Vertex& a = vertices[indices[i]];
-        Vertex& b = vertices[indices[i + 1]];
-        Vertex& c = vertices[indices[i + 2]];
+        PyramidVertex& a = vertices[indices[i]];
+        PyramidVertex& b = vertices[indices[i + 1]];
+        PyramidVertex& c = vertices[indices[i + 2]];
         XMVECTOR d = XMVectorSet(a.x - b.x, a.y - b.y, a.z - b.z, 0.0f);
         XMVECTOR e = XMVectorSet(c.x - b.x, c.y - b.y, c.z - b.z, 0.0f);
         XMVECTOR v_normal = XMVector3Cross(d, e);
@@ -85,29 +114,33 @@ void GenerateNormal(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
 class SqaurePyramidApp : public DX12Application {
 private:
     Win32Window window_;
+    DX12UI* ui_;
 public:
     SqaurePyramidApp(RenderContext::rendering_presets& presets) : DX12Application(presets), window_(L"Grek Renderer", WS_OVERLAPPEDWINDOW, presets_.width, presets_.height, this, GameWindowProcess) {
         presets_.hwnd = window_.handle();
         this->render_ctx_.Initialize();
+        scinfo.width = presets.width;
+        scinfo.height = presets.height;
         ShowCursor(FALSE);
-        shader_manager shader_mgr;
+        ShaderManager shader_mgr;
         shader_mgr.load_shaders();
         auto triangle_vs = shader_mgr.get("triangle.vs");
         auto triangle_ps = shader_mgr.get("triangle.ps");
-        texture_manager tex_mgr;
+        TextureManager tex_mgr;
         tex_mgr.load_textures();
-        auto basic = tex_mgr.get("13551.jpg");
+        auto basic = tex_mgr.get("basic.jpg");
+        auto brick = tex_mgr.get("brick.jpg");
         if (!triangle_vs.has_value() || !triangle_ps.has_value()) {
-            std::cout << "triangle shader not exists" << std::endl;
+            std::cout << "shaders not exists" << std::endl;
             exit(EXIT_FAILURE);
         }
 
-        if (!basic.has_value()) {
-            std::cout << "basic texture not exists" << std::endl;
+        if (!basic.has_value() || !brick.has_value()) {
+            std::cout << "textures not exists" << std::endl;
             exit(EXIT_FAILURE);
         }
 
-        std::vector<Vertex> vertices = {
+        std::vector<PyramidVertex> vertices = {
             { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
             { 0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
             {-0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0, 0, 0},
@@ -141,39 +174,49 @@ public:
 
         GenerateNormal(vertices, indices);
 
-        D3D12_INPUT_ELEMENT_DESC il[] = {
+        D3D12_INPUT_ELEMENT_DESC pyramid_layout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
-        D3D12_INPUT_LAYOUT_DESC layout = {il, _countof(il)};
-        Pipeline& default_pipeline = this->render_ctx_.CreatePipeline("default");
+        D3D12_INPUT_LAYOUT_DESC layout = {pyramid_layout, _countof(pyramid_layout)};
+        Pipeline::pipeline_init_t init = {32, 32, 32, true};
+        Pipeline& default_pipeline = this->render_ctx_.CreatePipeline("default", init);
         GPUResourceManager& gr_mgr = this->render_ctx_.GetGPUResourceManager();
-        SRVManager& srv_mgr = this->render_ctx_.GetSRVManager();
+        DescriptorHeap& descriptor_heap = default_pipeline.GetDescriptorHeap();
         auto vertices_res = gr_mgr.CreateVertexBuffer("pyramid_vertices", vertices.data(), vertices.size());
         auto indices_res = gr_mgr.CreateIndexBuffer("pyramid_indices", indices.data(), indices.size());
         auto scene_res = gr_mgr.CreateCBuffer("scene", scene);
         auto world_res = gr_mgr.CreateCBuffer("world", world);
-        auto tex_res = gr_mgr.CreateTexture("pyramid_tex", basic.value().width, basic.value().height, basic.value().data);
-        srv_mgr.BindTextureSRV(tex_res);
+        auto basic_tex = gr_mgr.CreateTexture("pyramid_tex", basic.value().width, basic.value().height, basic.value().data);
+        auto brick_tex = gr_mgr.CreateTexture("brick_tex", brick.value().width, brick.value().height, brick.value().data);
+        descriptor_heap.BindTextureAsSRV(basic_tex);
+        descriptor_heap.BindTextureAsSRV(brick_tex);
+        descriptor_heap.BindBufferAsCBV(scene_res);
+        descriptor_heap.BindBufferAsCBV(world_res);
         default_pipeline.BindVertexBuffer(vertices_res);
         default_pipeline.BindIndexBuffer(indices_res);
-        default_pipeline.BindCBuffer(scene_res);
-        default_pipeline.BindCBuffer(world_res);
         default_pipeline.BindStaticSampler(CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR));
         default_pipeline.BindIALayout(layout);
         default_pipeline.BindVertexShader(triangle_vs.value());
         default_pipeline.BindFragmentShader(triangle_ps.value());
-        default_pipeline.BindSRVHeap(srv_mgr.GetSRVHeap());
+        default_pipeline.SetDrawInstancesCount(2);
         default_pipeline.Build();
-        render_ctx_.SelectPipeline("default");
+        ui_ = new DX12UI(*this, tex_mgr, shader_mgr);
     }
 
     virtual void Update(float delta_ms) override {
+        if (!is_active) {
+            window_.set_title(std::format(L"Grek Renderer | Paused", fpsc_.fps()));
+            return;
+        }
         window_.set_title(std::format(L"Grek Renderer | {} FPS", fpsc_.fps()));
+        ui_->DrawString(std::format("Grek Render | FPS: {}", fpsc_.fps()), 100, 100, 64);
+        ui_->UpdateUI();
         auto& mgr = this->render_ctx_.GetGPUResourceManager();
         mgr.ModifyCBuffer("scene", scene);
         mgr.ModifyCBuffer("world", world);
+        mgr.ModifyCBuffer("texts_info", info, _countof(info));
         if (delta_ms == 0.0f) return;
         // Get cursor and calculate pitch and yaw
         POINT currentPos;

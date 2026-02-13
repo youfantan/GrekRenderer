@@ -5,9 +5,12 @@ cbuffer Scene : register(b0)
     float4 u_LightColor;
     float4 u_Ambient;
     float4 u_CameraPos;
-    row_major float4x4 u_WorldMatrix;
-    row_major float4x4 u_ViewMatrix;
+    row_major float4x4 ViewMatrix;
 };
+
+cbuffer World: register(b1) {
+    row_major float4x4 WorldMatrix[2];
+}
 
 struct VSIn {
     float3 pos : POSITION;
@@ -20,14 +23,17 @@ struct PSIn {
     float4 rpos : POSITION;
     float2 uv  : TEXCOORD;
     float3 normal : NORMAL;
+    uint iid : ID;
 };
 
-PSIn main(VSIn v)
+PSIn main(VSIn v, uint instance : SV_InstanceID)
 {
     PSIn o;
-    o.pos = mul(float4(v.pos, 1.0), u_ViewMatrix);
-    o.rpos = mul(float4(v.pos, 1.0), u_WorldMatrix);
-    o.normal = mul(float4(v.normal, 0.0), u_WorldMatrix);
+    row_major float4x4 wvp = mul(WorldMatrix[instance], ViewMatrix);
+    o.pos = mul(float4(v.pos, 1.0), wvp);
+    o.rpos = mul(float4(v.pos, 1.0), WorldMatrix[instance]);
+    o.normal = mul(float4(v.normal, 0.0), WorldMatrix[instance]);
     o.uv = v.uv;
+    o.iid = instance;
     return o;
 }

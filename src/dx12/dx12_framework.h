@@ -87,27 +87,31 @@ public:
 
 private:
     ComPtr<ID3D12Device> device_;
-    ComPtr<ID3D12CommandQueue> io_queue_;
-    ComPtr<ID3D12CommandQueue> graphics_queue_;
-    ComPtr<ID3D12GraphicsCommandList> io_list_;
-    ComPtr<ID3D12CommandAllocator> io_alloc_;
+    ComPtr<ID3D12CommandQueue> copy_queue_;
+    ComPtr<ID3D12GraphicsCommandList> copy_list_;
+    ComPtr<ID3D12CommandAllocator> copy_alloc_;
+    ComPtr<ID3D12CommandQueue> render_queue_;
+    ComPtr<ID3D12GraphicsCommandList> render_list_;
+    ComPtr<ID3D12CommandAllocator> render_alloc_;
     GPUFence io_fence_;
     std::vector<gpu_resource_t> temporary_resourcs_;
     std::unordered_map<std::string, gpu_resource_t> resources_map_;
 public:
     GPUResourceManager() {}
 
-    void Initialize(ComPtr<ID3D12Device> device, ComPtr<ID3D12CommandQueue> graphics_queue) {
+    void Initialize(ComPtr<ID3D12Device> device, ComPtr<ID3D12CommandQueue>& render_queue) {
         device_ = device;
-        graphics_queue_ = graphics_queue;
+        render_queue_ = render_queue;
         io_fence_.Initialize(device_);
         D3D12_COMMAND_QUEUE_DESC qd{};
         qd.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-        CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&io_queue_)));
-        io_queue_->SetName(L"Copy Queue");
-        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&io_alloc_)));
-        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, io_alloc_.Get(), nullptr, IID_PPV_ARGS(&io_list_)));
-        io_list_->Close();
+        CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&copy_queue_)));
+        copy_queue_->SetName(L"Copy Queue");
+        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&copy_alloc_)));
+        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, copy_alloc_.Get(), nullptr, IID_PPV_ARGS(&copy_list_)));
+        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_alloc_)));
+        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_alloc_.Get(), nullptr, IID_PPV_ARGS(&render_list_)));
+        copy_list_->Close();
     }
 
     ComPtr<ID3D12Resource> CreateUploadHeap(size_t size) {
@@ -150,17 +154,17 @@ public:
         const UINT64 buffer_size = GetRequiredIntermediateSize(tex_buffer.Get(), 0, 1);
         ComPtr<ID3D12Resource> tex_upload = CreateUploadHeap(buffer_size);
         io_fence_.Wait();
-        CHECKHR(io_alloc_->Reset());
-        CHECKHR(io_list_->Reset(io_alloc_.Get(), nullptr));
+        CHECKHR(copy_alloc_->Reset());
+        CHECKHR(copy_list_->Reset(copy_alloc_.Get(), nullptr));
         D3D12_SUBRESOURCE_DATA tex_upload_desc = {};
         tex_upload_desc.pData = tex_data;
         tex_upload_desc.RowPitch = width * 4;
         tex_upload_desc.SlicePitch = tex_upload_desc.RowPitch * height;
-        UpdateSubresources(io_list_.Get(), tex_buffer.Get(), tex_upload.Get(), 0, 0, 1, &tex_upload_desc);
-        CHECKHR(io_list_->Close());
-        ID3D12CommandList* lists[] = { io_list_.Get() };
-        io_queue_->ExecuteCommandLists(1, lists);
-        io_fence_.Insert(io_queue_);
+        UpdateSubresources(copy_list_.Get(), tex_buffer.Get(), tex_upload.Get(), 0, 0, 1, &tex_upload_desc);
+        CHECKHR(copy_list_->Close());
+        ID3D12CommandList* lists[] = { copy_list_.Get() };
+        copy_queue_->ExecuteCommandLists(1, lists);
+        io_fence_.Insert(copy_queue_);
         DXGI_FORMAT* fmt = new DXGI_FORMAT(tex_desc.Format);
         gpu_resource_t tex_res = {
             .res = tex_buffer,
@@ -210,13 +214,13 @@ public:
         memcpy(vertex_mapping, vertices, size_in_bytes);
         vertex_upload->Unmap(0, nullptr);
         io_fence_.Wait();
-        CHECKHR(io_alloc_->Reset());
-        CHECKHR(io_list_->Reset(io_alloc_.Get(), nullptr));
-        io_list_->CopyResource(vertex_buffer.Get(), vertex_upload.Get());
-        CHECKHR(io_list_->Close());
-        ID3D12CommandList* lists[] = { io_list_.Get() };
-        io_queue_->ExecuteCommandLists(1, lists);
-        io_fence_.Insert(io_queue_);
+        CHECKHR(copy_alloc_->Reset());
+        CHECKHR(copy_list_->Reset(copy_alloc_.Get(), nullptr));
+        copy_list_->CopyResource(vertex_buffer.Get(), vertex_upload.Get());
+        CHECKHR(copy_list_->Close());
+        ID3D12CommandList* lists[] = { copy_list_.Get() };
+        copy_queue_->ExecuteCommandLists(1, lists);
+        io_fence_.Insert(copy_queue_);
         uint32_t* stride = new uint32_t(sizeof(V));
         gpu_resource_t vertex_res = {
             .res = vertex_buffer,
@@ -266,13 +270,13 @@ public:
         index_upload->Unmap(0, nullptr);
 
         io_fence_.Wait();
-        CHECKHR(io_alloc_->Reset());
-        CHECKHR(io_list_->Reset(io_alloc_.Get(), nullptr));
-        io_list_->CopyResource(index_buffer.Get(), index_upload.Get());
-        CHECKHR(io_list_->Close());
-        ID3D12CommandList* lists[] = { io_list_.Get() };
-        io_queue_->ExecuteCommandLists(1, lists);
-        io_fence_.Insert(io_queue_);
+        CHECKHR(copy_alloc_->Reset());
+        CHECKHR(copy_list_->Reset(copy_alloc_.Get(), nullptr));
+        copy_list_->CopyResource(index_buffer.Get(), index_upload.Get());
+        CHECKHR(copy_list_->Close());
+        ID3D12CommandList* lists[] = { copy_list_.Get() };
+        copy_queue_->ExecuteCommandLists(1, lists);
+        io_fence_.Insert(copy_queue_);
         gpu_resource_t index_res = {
             .res = index_buffer,
             .state = D3D12_RESOURCE_STATE_COMMON,
@@ -301,19 +305,8 @@ public:
 
     template<typename C>
     gpu_resource_handle_t CreateCBuffer(const std::string& res_id, const C& data) {
-        ComPtr<ID3D12Resource> cbuffer;
-        if constexpr (sizeof(C) % 256 != 0) {
-            static_assert("constant buffer not satisfied 256 bytes padding");
-        }
-        auto constant_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        auto constant_heap_desc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(C));
-        CHECKHR(device_->CreateCommittedResource(
-               &constant_heap_prop,
-               D3D12_HEAP_FLAG_NONE,
-               &constant_heap_desc,
-               D3D12_RESOURCE_STATE_GENERIC_READ,
-               nullptr,
-               IID_PPV_ARGS(&cbuffer)));
+        ComPtr<ID3D12Resource> cbuffer = CreateUploadHeap(sizeof(C));
+        uint32_t* stride = new uint32_t(sizeof(C));
         auto wres_id = string_to_wstring(res_id);
         cbuffer->SetName(wres_id.value().c_str());
         gpu_resource_t cbuffer_res = {
@@ -322,7 +315,7 @@ public:
             .type = D3D12_HEAP_TYPE_UPLOAD,
             .fence_value = std::numeric_limits<uint64_t>::max(),
             .size = sizeof(C),
-            .ext_info = nullptr,
+            .ext_info = stride,
         };
         resources_map_[res_id] = cbuffer_res;
         ModifyCBuffer(res_id, data);
@@ -347,18 +340,39 @@ public:
         return true;
     }
 
-    void CheckResourceStates(ComPtr<ID3D12GraphicsCommandList>& render_list) {
-        std::vector<D3D12_RESOURCE_BARRIER> barriers;
-        for (auto& pair : resources_map_) {
-            auto& resource = pair.second;
-            if (resource.state != D3D12_RESOURCE_STATE_COMMON) {
-                barriers.emplace_back(CD3DX12_RESOURCE_BARRIER::Transition(resource.res.Get(), resource.state, D3D12_RESOURCE_STATE_COMMON));
-                resource.state = D3D12_RESOURCE_STATE_COMMON;
-            }
+    template<typename C>
+    gpu_resource_handle_t CreateCBuffer(const std::string& res_id, const C* data_array, const uint32_t count) {
+        auto buffer = CreateUploadHeap(sizeof(C) * count);
+        uint32_t* stride = new uint32_t(sizeof(C));
+        gpu_resource_t cbuffer_res = {
+            .res = buffer,
+            .state = D3D12_RESOURCE_STATE_COMMON,
+            .type = D3D12_HEAP_TYPE_UPLOAD,
+            .fence_value = std::numeric_limits<uint64_t>::max(),
+            .size = sizeof(C) * count,
+            .ext_info = stride,
+        };
+        resources_map_[res_id] = cbuffer_res;
+        ModifyCBuffer(res_id, data_array, count);
+        gpu_resource_handle_t handle {
+            .typ = gpu_resource_type::CONST_BUFFER,
+            .id = res_id,
+            .ptr = &resources_map_[res_id],
+        };
+        return handle;
+    }
+
+    template<typename C>
+    bool ModifyCBuffer(const std::string& res_id, const C* data_array, const uint32_t count) {
+        if (!resources_map_.contains(res_id)) {
+            return false;
         }
-        if (barriers.size() != 0) {
-            render_list->ResourceBarrier(barriers.size(), barriers.data());
-        }
+        ComPtr<ID3D12Resource> buffer = resources_map_[res_id].res;
+        uint8_t* mapping_;
+        CHECKHR(buffer->Map(0, nullptr, reinterpret_cast<void**>(&mapping_)));
+        memcpy(mapping_, reinterpret_cast<const void*>(data_array), sizeof(C) * count);
+        buffer->Unmap(0, nullptr);
+        return true;
     }
 
     void DeferredRelease() {
@@ -379,73 +393,119 @@ public:
     }
 };
 
-class SRVManager {
+class DescriptorHeap {
 private:
     ComPtr<ID3D12Device> device_;
-    ComPtr<ID3D12DescriptorHeap> srv_heap_;
-    uint32_t srv_size_;
-    uint32_t srv_off_ = 0;
+    ComPtr<ID3D12DescriptorHeap> heap_;
     uint32_t srv_count_;
+    uint32_t cbv_count_;
+    uint32_t uav_count_;
+    uint32_t descriptor_size_;
+    uint32_t srv_off_;
+    uint32_t cbv_off_;
+    uint32_t uav_off_;
 public:
-    SRVManager() {}
-
-    void Initialize(ComPtr<ID3D12Device> device, uint32_t srv_count) {
-        srv_count_ = srv_count;
-        device_ = device;
+    DescriptorHeap(ComPtr<ID3D12Device>& device, uint32_t srv_count, uint32_t cbv_count, uint32_t uav_count) : device_(device), srv_count_(srv_count), cbv_count_(cbv_count), uav_count_(uav_count) {
         D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-        srv_heap_desc.NumDescriptors = srv_count_;
+        srv_heap_desc.NumDescriptors = srv_count_ * 3;
         srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        CHECKHR(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap_)));
-        srv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        CHECKHR(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&heap_)));
+        descriptor_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        srv_off_ = 0;
+        cbv_off_ = 0 + srv_count;
+        uav_off_ = 0 + srv_count + cbv_count;
     }
-
-    void BindTextureSRV(const GPUResourceManager::gpu_resource_handle_t& hres) {
+    /* Bind a descriptor for texture to the descriptor heap then returns the binding register number */
+    uint32_t BindTextureAsSRV(const GPUResourceManager::gpu_resource_handle_t& hres) {
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
         srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv_desc.Format = *static_cast<DXGI_FORMAT*>(hres.ptr->ext_info);
         srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv_desc.Texture2D.MipLevels = 1;
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += srv_off_ * srv_size_;
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += srv_off_ * descriptor_size_;
         device_->CreateShaderResourceView(hres.ptr->res.Get(), &srv_desc, handle);
+        uint32_t bind_reg = srv_off_;
         ++srv_off_;
+        return bind_reg;
     }
 
-    ComPtr<ID3D12DescriptorHeap> GetSRVHeap() {
-        return srv_heap_;
+    uint32_t BindBufferAsSRV(const GPUResourceManager::gpu_resource_handle_t& hres) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv_desc.Buffer.FirstElement = 0;
+        srv_desc.Buffer.StructureByteStride = *reinterpret_cast<uint32_t*>(hres.ptr->ext_info);
+        srv_desc.Buffer.NumElements = hres.ptr->size / srv_desc.Buffer.StructureByteStride;
+        srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += srv_off_ * descriptor_size_;
+        device_->CreateShaderResourceView(hres.ptr->res.Get(), &srv_desc, handle);
+        uint32_t bind_reg = srv_off_;
+        ++srv_off_;
+        return bind_reg;
     }
 
+    uint32_t BindBufferAsCBV(const GPUResourceManager::gpu_resource_handle_t& hres) {
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
+        cbv_desc.BufferLocation = hres.ptr->res->GetGPUVirtualAddress();
+        cbv_desc.SizeInBytes = hres.ptr->size;
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += cbv_off_ * descriptor_size_;
+        device_->CreateConstantBufferView(&cbv_desc, handle);
+        uint32_t bind_reg = cbv_off_ - srv_count_;
+        ++cbv_off_;
+        return bind_reg;
+    }
+
+    ComPtr<ID3D12DescriptorHeap> GetHeap() {
+        return heap_;
+    }
+
+    uint32_t GetDescriptorSize() {
+        return descriptor_size_;
+    }
+
+    uint32_t GetSRVCount() const {
+        return srv_count_;
+    }
+
+    uint32_t GetCBVCount() const {
+        return cbv_count_;
+    }
+
+    uint32_t GetUAVCount() const {
+        return uav_count_;
+    }
+
+    uint32_t GetAllDescriptorsCount() const {
+        return srv_count_ + cbv_count_ + uav_count_;
+    }
 };
 
 class RootSignature {
 private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12RootSignature> signature_;
-    uint32_t reg_b_index = 0;
-    uint32_t reg_t_index = 0;
     std::vector<CD3DX12_ROOT_PARAMETER> root_params_;
     std::vector<D3D12_STATIC_SAMPLER_DESC> samplers_;
-    CD3DX12_DESCRIPTOR_RANGE tex_range_;
+    CD3DX12_DESCRIPTOR_RANGE heap_range_[3]{};
 public:
-    RootSignature(ComPtr<ID3D12Device> device) : device_(device) {}
-    uint32_t BindConstantBufferView() {
-        CD3DX12_ROOT_PARAMETER p{};
-        p.InitAsConstantBufferView(reg_b_index, 0, D3D12_SHADER_VISIBILITY_ALL);
-        root_params_.push_back(p);
-        uint32_t reg = reg_b_index;
-        ++reg_b_index;
-        return reg;
-    }
+    explicit RootSignature(ComPtr<ID3D12Device>& device) : device_(device) {}
 
-    uint32_t BindShaderViewHeap(uint32_t heap_size) {
-        tex_range_.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, heap_size, reg_t_index);
-        uint32_t reg = reg_t_index;
-        CD3DX12_ROOT_PARAMETER p{};
-        p.InitAsDescriptorTable(1, &tex_range_, D3D12_SHADER_VISIBILITY_ALL);
-        root_params_.push_back(p);
-        ++reg_t_index;
-        return reg;
+    void BindHeap(const DescriptorHeap& heap) {
+        heap_range_[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, heap.GetSRVCount(), 0);
+        heap_range_[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, heap.GetCBVCount(), 0);
+        heap_range_[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, heap.GetUAVCount(), 0);
+        CD3DX12_ROOT_PARAMETER p[3]{};
+        p[0].InitAsDescriptorTable(1, &heap_range_[0], D3D12_SHADER_VISIBILITY_ALL);
+        p[1].InitAsDescriptorTable(1, &heap_range_[1], D3D12_SHADER_VISIBILITY_ALL);
+        p[2].InitAsDescriptorTable(1, &heap_range_[2], D3D12_SHADER_VISIBILITY_ALL);
+        root_params_.push_back(p[0]);
+        root_params_.push_back(p[1]);
+        root_params_.push_back(p[2]);
     }
 
     void BindStaticSampler(const D3D12_STATIC_SAMPLER_DESC& desc) {
@@ -453,11 +513,11 @@ public:
     }
 
     void Build() {
-        CD3DX12_ROOT_SIGNATURE_DESC desc;
+        CD3DX12_ROOT_SIGNATURE_DESC desc{};
         desc.Init(root_params_.size(), root_params_.data(), samplers_.size(), samplers_.data(), D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-        ComPtr<ID3DBlob> rsBlob, errBlob;
-        CHECKHR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &errBlob));
-        CHECKHR(device_->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&signature_)));
+        ComPtr<ID3DBlob> rs_blob, err_blob;
+        CHECKHR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &rs_blob, &err_blob));
+        CHECKHR(device_->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(), IID_PPV_ARGS(&signature_)));
     }
 
     ComPtr<ID3D12RootSignature> GetRootSignature() {
@@ -468,41 +528,36 @@ public:
 class Pipeline {
 public:
     enum class render_binding_type {
-        CBV,
+        CBV_HEAP,
         SRV_HEAP,
+        UAV_HEAP
     };
 
-    struct render_binding {
-        render_binding_type typ;
-        uint32_t reg;
-        ComPtr<IUnknown> res;
+    using pipeline_init_t = struct {
+        uint32_t srv_heap_size;
+        uint32_t cbv_heap_size;
+        uint32_t uav_heap_size;
+        bool enable_msaa_4x;
     };
 
 private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12PipelineState> pso_;
     RootSignature signature_;
-    std::vector<render_binding> bindings_;
     D3D12_INPUT_LAYOUT_DESC layout_;
     ComPtr<ID3DBlob> vs_;
     ComPtr<ID3DBlob> ps_;
-    bool enable_msaa_4x_;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view_;
     D3D12_INDEX_BUFFER_VIEW index_buffer_view_;
+    DescriptorHeap heap_;
+    const pipeline_init_t init_;
+    uint32_t draw_instances_{0};
 public:
-    Pipeline(const ComPtr<ID3D12Device>& device, bool enable_msaa_4x) : device_(device), signature_(device), enable_msaa_4x_(enable_msaa_4x) {}
-    Pipeline(Pipeline& p) : device_(p.device_), pso_(p.pso_), signature_(p.signature_), bindings_(p.bindings_), layout_(p.layout_), vs_(p.vs_), ps_(p.ps_), enable_msaa_4x_(p.enable_msaa_4x_) {}
-    Pipeline(Pipeline&&) = delete;
-    void BindCBuffer(const GPUResourceManager::gpu_resource_handle_t& hres) {
-        uint32_t reg = signature_.BindConstantBufferView();
-        bindings_.emplace_back(render_binding_type::CBV, reg, hres.ptr->res);
-    }
+    Pipeline(ComPtr<ID3D12Device>& device, const pipeline_init_t& init) : device_(device), init_(init), signature_(device), heap_(device, init.srv_heap_size, init.cbv_heap_size, init.uav_heap_size){}
+    Pipeline(Pipeline&) = delete;
+    Pipeline(Pipeline&& p) = default;
     void BindStaticSampler(const D3D12_STATIC_SAMPLER_DESC& desc) {
         signature_.BindStaticSampler(desc);
-    }
-    void BindSRVHeap(ComPtr<ID3D12DescriptorHeap> heap) {
-        uint32_t reg = signature_.BindShaderViewHeap(heap->GetDesc().NumDescriptors);
-        bindings_.emplace_back(render_binding_type::SRV_HEAP, reg, heap);
     }
 
     void BindIALayout(D3D12_INPUT_LAYOUT_DESC desc) {
@@ -529,6 +584,7 @@ public:
     }
 
     void Build() {
+        signature_.BindHeap(heap_);
         signature_.Build();
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
         pso.InputLayout = layout_;
@@ -536,7 +592,14 @@ public:
         pso.VS = {vs_->GetBufferPointer() , vs_->GetBufferSize() };
         pso.PS = { ps_->GetBufferPointer(), ps_->GetBufferSize() };
         pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        pso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        pso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        pso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+        pso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
         pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
         pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
@@ -544,10 +607,14 @@ public:
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.NumRenderTargets = 1;
         pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        pso.SampleDesc.Count = enable_msaa_4x_ ? 4 : 1;
+        pso.SampleDesc.Count = init_.enable_msaa_4x ? 4 : 1;
         pso.SampleDesc.Quality = 0;
         pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         CHECKHR(device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pso_)));
+    }
+
+    void SetDrawInstancesCount(uint32_t count) {
+        draw_instances_ = count;
     }
 
     ComPtr<ID3D12PipelineState> GetPSO() {
@@ -556,10 +623,6 @@ public:
 
     ComPtr<ID3D12RootSignature> GetRootSignature() {
         return signature_.GetRootSignature();
-    }
-
-    std::vector<render_binding>& GetRenderBindings() {
-        return bindings_;
     }
 
     D3D12_VERTEX_BUFFER_VIEW& GetVertexBufferView() {
@@ -573,6 +636,14 @@ public:
     uint32_t GetInstanceIndicesCount() {
         return index_buffer_view_.SizeInBytes / sizeof(uint32_t);
     }
+
+    uint32_t GetDrawInstancesCount() {
+        return draw_instances_;
+    }
+
+    DescriptorHeap& GetDescriptorHeap() {
+        return heap_;
+    }
 };
 
 class RenderContext {
@@ -583,16 +654,15 @@ public:
         bool enable_msaa_4x;
         float clear_color[4];
         HWND hwnd;
-        uint32_t srv_heap_size;
     };
 private:
     ComPtr<IDXGIFactory6> factory_;
     ComPtr<IDXGIAdapter> adapter_;
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS ms_lv_;
     ComPtr<ID3D12Device> device_;
-    ComPtr<ID3D12CommandQueue> graphics_queue_;
-    ComPtr<ID3D12CommandAllocator> graphics_alloc_;
-    ComPtr<ID3D12GraphicsCommandList> graphics_list_;
+    ComPtr<ID3D12CommandQueue> render_queue_;
+    ComPtr<ID3D12CommandAllocator> render_alloc_;
+    ComPtr<ID3D12GraphicsCommandList> render_list_;
     ComPtr<IDXGISwapChain3> swapchain_;
     ComPtr<ID3D12Resource> buffers_[2];
     ComPtr<ID3D12Resource> msaa_rt_;
@@ -608,11 +678,7 @@ private:
     GPUFence graphics_fence_;
     std::unordered_map<std::string, Pipeline> pipelines_;
     const rendering_presets& presets_;
-    SRVManager srv_mgr_;
     GPUResourceManager gpu_resource_mgr_;
-
-    std::string pipeline_id_;
-
 public:
     RenderContext(const rendering_presets& presets): presets_(presets) {}
 
@@ -662,18 +728,17 @@ public:
         // Create a commmand queue with direct list
         D3D12_COMMAND_QUEUE_DESC qd{};
         qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&graphics_queue_)));
-        graphics_queue_->SetName(L"Render Queue");
-        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&graphics_alloc_)));
-        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, graphics_alloc_.Get(), nullptr, IID_PPV_ARGS(&graphics_list_)));
+        CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&render_queue_)));
+        render_queue_->SetName(L"Render Queue");
+        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_alloc_)));
+        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_alloc_.Get(), nullptr, IID_PPV_ARGS(&render_list_)));
 
-        gpu_resource_mgr_.Initialize(device_, graphics_queue_);
-        srv_mgr_.Initialize(device_, presets_.srv_heap_size);
+        gpu_resource_mgr_.Initialize(device_, render_queue_);
         graphics_fence_.Initialize(device_);
 
         // Create swapchain with lower level, then convert to higher level to support GetCurrentBackBufferIndex
         ComPtr<IDXGISwapChain1> sc;
-        CHECKHR(factory_->CreateSwapChainForHwnd(graphics_queue_.Get(), presets_.hwnd, &sd, nullptr, nullptr, &sc));
+        CHECKHR(factory_->CreateSwapChainForHwnd(render_queue_.Get(), presets_.hwnd, &sd, nullptr, nullptr, &sc));
         CHECKHR(sc.As(&swapchain_));
         fb_index_ = swapchain_->GetCurrentBackBufferIndex();
 
@@ -757,85 +822,75 @@ public:
         device_->CreateDepthStencilView(depth_buffer_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
         // Query DSV size
         dsv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-        graphics_list_->Close();
+        render_list_->Close();
     }
 
-    Pipeline& CreatePipeline(const std::string& pipeline_id) {
-        auto [it, inserted] = pipelines_.try_emplace(pipeline_id, device_, presets_.enable_msaa_4x);
+    Pipeline& CreatePipeline(const std::string& pipeline_id, const Pipeline::pipeline_init_t& init) {
+        auto [it, inserted] = pipelines_.try_emplace(pipeline_id, device_, init);
         return it->second;
     }
 
-    void SelectPipeline(const std::string& pipeline_id) {
-        pipeline_id_ = pipeline_id;
+    Pipeline& SelectPipeline(const std::string& pipeline_id) {
+        return pipelines_.at(pipeline_id);
     }
 
     void Render() {
-        Pipeline& pipeline = pipelines_.at(pipeline_id_);
         graphics_fence_.Wait();
-        CHECKHR(graphics_alloc_->Reset());
-        CHECKHR(graphics_list_->Reset(graphics_alloc_.Get(), pipeline.GetPSO().Get()));
+        CHECKHR(render_alloc_->Reset());
+        CHECKHR(render_list_->Reset(render_alloc_.Get(), nullptr));
         // Set viewport and scissor rect
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)presets_.width, (float)presets_.height, 0.0f, 1.0f };
         D3D12_RECT scissor_rect = { 0, 0, static_cast<LONG>(presets_.width), static_cast<LONG>(presets_.height) };
-        graphics_list_->RSSetViewports(1, &viewport);
-        graphics_list_->RSSetScissorRects(1, &scissor_rect);
-
-        // Check resources states and do state transform
-        gpu_resource_mgr_.CheckResourceStates(graphics_list_);
+        render_list_->RSSetViewports(1, &viewport);
+        render_list_->RSSetScissorRects(1, &scissor_rect);
 
         if (presets_.enable_msaa_4x) {
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(msaa_rt_.Get(),
     D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            graphics_list_->ResourceBarrier(1, &barrier);
+            render_list_->ResourceBarrier(1, &barrier);
         } else {
             // Set backbuffer to Render Target
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
                 buffers_[fb_index_].Get(),
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET);
-            graphics_list_->ResourceBarrier(1, &barrier);
+            render_list_->ResourceBarrier(1, &barrier);
         }
 
         // Offset and get descriptor
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
         rtv.ptr += fb_index_ * rtv_size_;
-        graphics_list_->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        render_list_->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         if (presets_.enable_msaa_4x) {
             D3D12_CPU_DESCRIPTOR_HANDLE msaa_rtv = msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-            graphics_list_->OMSetRenderTargets(1, &msaa_rtv, FALSE, &dsv);
-            graphics_list_->ClearRenderTargetView(msaa_rtv, presets_.clear_color, 0, nullptr);
+            render_list_->OMSetRenderTargets(1, &msaa_rtv, FALSE, &dsv);
+            render_list_->ClearRenderTargetView(msaa_rtv, presets_.clear_color, 0, nullptr);
         } else {
             // Clear Render Target
-            graphics_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-            graphics_list_->ClearRenderTargetView(rtv, presets_.clear_color, 0, nullptr);
+            render_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+            render_list_->ClearRenderTargetView(rtv, presets_.clear_color, 0, nullptr);
         }
-        ID3D12DescriptorHeap* heaps[] = { srv_mgr_.GetSRVHeap().Get() };
-        graphics_list_->SetDescriptorHeaps(1, heaps);
-        graphics_list_->SetGraphicsRootSignature(pipeline.GetRootSignature().Get());
-
-        auto& bindings = pipeline.GetRenderBindings();
-        using typ = Pipeline::render_binding_type;
-        for (uint32_t i = 0; i < bindings.size(); ++i) {
-            auto binding = bindings[i];
-            if (binding.typ == typ::CBV) {
-                ComPtr<ID3D12Resource> res;
-                binding.res.As(&res);
-                graphics_list_->SetGraphicsRootConstantBufferView(i, res->GetGPUVirtualAddress());
-            } else if (binding.typ == typ::SRV_HEAP) {
-                ComPtr<ID3D12DescriptorHeap> res;
-                binding.res.As(&res);
-                graphics_list_->SetGraphicsRootDescriptorTable(i, D3D12_GPU_DESCRIPTOR_HANDLE(res->GetGPUDescriptorHandleForHeapStart()));
-            }
+        for (auto& pair : pipelines_) {
+            auto& pipeline = pair.second;
+            render_list_->SetPipelineState(pipeline.GetPSO().Get());
+            render_list_->SetGraphicsRootSignature(pipeline.GetRootSignature().Get());
+            ID3D12DescriptorHeap* heaps[] = {pipeline.GetDescriptorHeap().GetHeap().Get()};
+            render_list_->SetDescriptorHeaps(1, heaps);
+            auto handle = pipeline.GetDescriptorHeap().GetHeap()->GetGPUDescriptorHandleForHeapStart();
+            render_list_->SetGraphicsRootDescriptorTable(0, handle);
+            handle.ptr += pipeline.GetDescriptorHeap().GetSRVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
+            render_list_->SetGraphicsRootDescriptorTable(1, handle);
+            handle.ptr += pipeline.GetDescriptorHeap().GetCBVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
+            render_list_->SetGraphicsRootDescriptorTable(2, handle);
+            // Use triangle Topology
+            render_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            // Load vertices and indices
+            render_list_->IASetVertexBuffers(0, 1, &pipeline.GetVertexBufferView());
+            render_list_->IASetIndexBuffer(&pipeline.GetIndexBufferView());
+            // Draw call
+            render_list_->DrawIndexedInstanced(pipeline.GetInstanceIndicesCount(), pipeline.GetDrawInstancesCount(), 0, 0, 0);
         }
-
-        // Use triangle Topology
-        graphics_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        // Load vertices and indices
-        graphics_list_->IASetVertexBuffers(0, 1, &pipeline.GetVertexBufferView());
-        graphics_list_->IASetIndexBuffer(&pipeline.GetIndexBufferView());
-        // Draw call
-        graphics_list_->DrawIndexedInstanced(pipeline.GetInstanceIndicesCount(), 2, 0, 0, 0);
         if (presets_.enable_msaa_4x) {
             D3D12_RESOURCE_BARRIER barriers[2] = {
                 CD3DX12_RESOURCE_BARRIER::Transition(
@@ -847,26 +902,26 @@ public:
                     D3D12_RESOURCE_STATE_PRESENT,
                     D3D12_RESOURCE_STATE_RESOLVE_DEST)
                 };
-            graphics_list_->ResourceBarrier(2, barriers);
-            graphics_list_->ResolveSubresource(buffers_[fb_index_].Get(), 0, msaa_rt_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+            render_list_->ResourceBarrier(2, barriers);
+            render_list_->ResolveSubresource(buffers_[fb_index_].Get(), 0, msaa_rt_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
                 buffers_[fb_index_].Get(),
                 D3D12_RESOURCE_STATE_RESOLVE_DEST,
                 D3D12_RESOURCE_STATE_PRESENT);
-            graphics_list_->ResourceBarrier(1, &barrier);
+            render_list_->ResourceBarrier(1, &barrier);
         } else {
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
                 buffers_[fb_index_].Get(),
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT);
-            graphics_list_->ResourceBarrier(1, &barrier);
+            render_list_->ResourceBarrier(1, &barrier);
         }
-        CHECKHR(graphics_list_->Close());
-        ID3D12CommandList* lists[] = { graphics_list_.Get() };
+        CHECKHR(render_list_->Close());
+        ID3D12CommandList* lists[] = { render_list_.Get() };
         // Execute and present
-        graphics_queue_->ExecuteCommandLists(1, lists);
+        render_queue_->ExecuteCommandLists(1, lists);
         CHECKHR(swapchain_->Present(1, 0));
-        graphics_fence_.Insert(graphics_queue_);
+        graphics_fence_.Insert(render_queue_);
         fb_index_ = swapchain_->GetCurrentBackBufferIndex();
         gpu_resource_mgr_.DeferredRelease();
     }
@@ -877,10 +932,6 @@ public:
 
     GPUResourceManager& GetGPUResourceManager() {
         return gpu_resource_mgr_;
-    }
-
-    SRVManager& GetSRVManager() {
-        return srv_mgr_;
     }
 
     ~RenderContext() {
@@ -917,6 +968,10 @@ public:
         }
     }
 
+    const RenderContext::rendering_presets& GetRenderPresets() const {
+        return presets_;
+    }
+
     static LRESULT CALLBACK GameWindowProcess(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         DX12Application* app = nullptr;
         if (uMsg != WM_NCCREATE) {
@@ -938,7 +993,7 @@ public:
     }
 };
 
-class shader_manager {
+class ShaderManager {
     enum class shader_type {
         VERTEX_SHADER,
         FRAGMENT_SHADER,
@@ -1009,13 +1064,13 @@ public:
                 std::string hlsl_typ_ver;
                 if (shader.path().string().ends_with(".vs")) {
                     typ = shader_type::VERTEX_SHADER;
-                    hlsl_typ_ver = "vs_5_0";
+                    hlsl_typ_ver = "vs_5_1";
                 } else if (shader.path().string().ends_with(".ps")) {
                     typ = shader_type::FRAGMENT_SHADER;
-                    hlsl_typ_ver = "ps_5_0";
+                    hlsl_typ_ver = "ps_5_1";
                 } else {
                     typ = shader_type::UNKNOWN_SHADER;
-                    hlsl_typ_ver = "vs_5_0";
+                    hlsl_typ_ver = "vs_5_1";
                 }
                 if (shader_cache.exists() && !force_recompile) {
                     std::cout << "shader compiled yet, using cache" << std::endl;
@@ -1055,7 +1110,7 @@ public:
     }
 };
 
-class texture_manager {
+class TextureManager {
 public:
     using raw_tex_t = struct {
         uint32_t width;
@@ -1073,7 +1128,7 @@ public:
             exit(EXIT_FAILURE);
         }
         for (auto& texture : std::filesystem::directory_iterator(textures)) {
-            if (texture.is_regular_file() && texture.path().string().ends_with(".jpg")) {
+            if (texture.is_regular_file() && (texture.path().string().ends_with(".jpg")) || texture.path().string().ends_with(".png")) {
                 std::cout << std::format("loading texture {}", texture.path().filename().string()) << std::endl;
                 int width, height, channels;
                 unsigned char* data = stbi_load(texture.path().string().c_str(), &width, &height, &channels, 4);

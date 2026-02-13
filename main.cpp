@@ -17,9 +17,8 @@ int main() {
         .width = 1280,
         .height = 720,
         .enable_msaa_4x = true,
-        .clear_color = {0.5f, 0.2f, 0.3f, 1.0f},
+        .clear_color = {0.5f, 0.5f, 0.5f, 1.0f},
         .hwnd = nullptr,
-        .srv_heap_size = 32
     };
     SqaurePyramidApp app(presets);
     app.Run();

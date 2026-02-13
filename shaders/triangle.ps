@@ -5,18 +5,22 @@ cbuffer Scene : register(b0)
     float4 u_LightColor;
     float4 u_Ambient;
     float4 u_CameraPos;
-    row_major float4x4 u_WorldMatrix;
-    row_major float4x4 u_ViewMatrix;
+    row_major float4x4 ViewMatrix;
 };
 
-Texture2D g_Texture : register(t0);
-SamplerState g_Sampler : register(s0);
+cbuffer World: register(b1) {
+    row_major float4x4 WorldMatrix[2];
+}
+
+Texture2D Textures[32] : register(t0);
+SamplerState Sampler : register(s0);
 
 struct PSIn {
     float4 pos : SV_POSITION;
     float4 rpos : POSITION;
     float2 uv  : TEXCOORD;
     float3 normal : NORMAL;
+    uint iid : ID;
 };
 
 float4 main(PSIn i) : SV_TARGET
@@ -33,7 +37,7 @@ float4 main(PSIn i) : SV_TARGET
     float3 specular = specular_intensity * u_LightColor.rgb;
 
     float3 final_light = diffuse + u_Ambient.rgb;
-    float4 tex_color = g_Texture.Sample(g_Sampler, i.uv);
+    float4 tex_color = Textures[NonUniformResourceIndex(i.iid)].Sample(Sampler, i.uv);
 
     float3 final_color = tex_color.rgb * final_light + specular;
     return float4(final_color, u_GlobalColor.a);

@@ -11,5 +11,6 @@ add_executable(Gerk main.cpp
         src/logic.h
         src/common/obj_loader.h
         src/common/model_loader.h
-        "src/dx12/square_pyramid_sample.hpp")
+        "src/dx12/square_pyramid_sample.hpp"
+        src/dx12/dx12_ui.h)
 target_link_libraries(Gerk d3d12 dxgi d3dcompiler)

@@ -1,0 +1,43 @@
+struct CharInfo {
+    uint ascii;
+    uint x;
+    uint y;
+    uint size;
+};
+
+struct SDFCoord {
+    float tex_u0;
+    float tex_v0;
+    float tex_u1;
+    float tex_v1;
+};
+
+Texture2D Tex : register(t0);
+StructuredBuffer<SDFCoord> UVData : register(t1);
+StructuredBuffer<CharInfo> Characters : register(t2);
+SamplerState Sampler : register(s0);
+
+cbuffer UI : register(b0)
+{
+    float ScreenWidth;
+    float ScreenHeight;
+};
+
+struct PSIn {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD;
+};
+
+float GetSDFAlpha(float2 uv)
+{
+    float dist = Tex.Sample(Sampler, uv).r;
+    float smoothing = fwidth(dist); 
+    float alpha = smoothstep(0.5 - smoothing, 0.5 + smoothing, dist);
+    return alpha;
+}
+
+float4 main(PSIn p) : SV_TARGET {
+    float alpha = GetSDFAlpha(p.uv);
+    clip(alpha - 0.001);
+    return float4(float3(0.0f, 0.0f, 0.0f), alpha);
+}
