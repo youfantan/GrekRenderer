@@ -3,7 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
-
+#define NOMINMAX
 #include "Windows.h"
 
 inline std::optional<std::wstring> string_to_wstring(std::string_view src) {
@@ -14,6 +14,28 @@ inline std::optional<std::wstring> string_to_wstring(std::string_view src) {
     if (!dst) return std::nullopt;
     MultiByteToWideChar(CP_ACP, 0, src.data(), -1, dst, len);
     return dst;
+}
+
+inline std::optional<std::string> wstring_to_string(std::wstring_view src)
+{
+    if (src.empty()) return std::nullopt;
+    int len = WideCharToMultiByte(CP_ACP, 0, src.data(), -1, nullptr, 0, nullptr, nullptr);
+    if (len == 0) return std::nullopt;
+    char* dst = (char*)malloc(len);
+    if (!dst) return std::nullopt;
+    WideCharToMultiByte( CP_ACP, 0, src.data(), -1, dst, len, nullptr, nullptr);
+    return dst;
+}
+
+inline bool read_file_to_string(std::string_view file_name, std::string& str) {
+    std::ifstream fs(file_name.data(), std::ios::in | std::ios::binary);
+    if (!fs.good()) return false;
+    fs.seekg(0, std::ios::end);
+    size_t sz = fs.tellg();
+    fs.seekg(0, std::ios::beg);
+    str.resize(sz + 1);
+    fs.read(str.data(), sz);
+    return true;
 }
 
 class FPSCounter {

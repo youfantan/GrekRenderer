@@ -202,7 +202,7 @@ public:
         default_pipeline.BindFragmentShader(triangle_ps.value());
         default_pipeline.SetDrawInstancesCount(2);
         default_pipeline.Build();
-        ui_ = new DX12UI(*this, tex_mgr, shader_mgr);
+        ui_ = new DX12UI(*this, "Lanting", tex_mgr, shader_mgr);
     }
 
     virtual void Update(float delta_ms) override {
@@ -211,7 +211,7 @@ public:
             return;
         }
         window_.set_title(std::format(L"Grek Renderer | {} FPS", fpsc_.fps()));
-        ui_->DrawString(std::format("Grek Render | FPS: {}", fpsc_.fps()), 100, 100, 64);
+        ui_->DrawString(std::format(L"Grek渲染器 | {} FPS", fpsc_.fps()), 10, 640, 24);
         ui_->UpdateUI();
         auto& mgr = this->render_ctx_.GetGPUResourceManager();
         mgr.ModifyCBuffer("scene", scene);

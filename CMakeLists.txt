@@ -4,6 +4,7 @@ project(Gerk)
 set(CMAKE_CXX_STANDARD 20)
 include_directories(include)
 add_compile_definitions(-DUNICODE)
+link_directories(lib)
 add_executable(Gerk main.cpp
         src/win32/window.h
         src/win32/common.h
@@ -12,5 +13,6 @@ add_executable(Gerk main.cpp
         src/common/obj_loader.h
         src/common/model_loader.h
         "src/dx12/square_pyramid_sample.hpp"
-        src/dx12/dx12_ui.h)
-target_link_libraries(Gerk d3d12 dxgi d3dcompiler)
+        src/dx12/dx12_ui.h
+        src/common/font_loader.h)
+target_link_libraries(Gerk d3d12 dxgi d3dcompiler freetyped)

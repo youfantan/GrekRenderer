@@ -6,6 +6,7 @@
 
 #include <cmath>
 
+#include "src/common/font_loader.h"
 #include "src/dx12/dx12_framework.h"
 #include "src/dx12/square_pyramid_sample.hpp"
 #include "src/win32/common.h"
@@ -13,6 +14,9 @@
 
 
 int main() {
+
+    FontLoader loader("Lanting");
+    loader.GenerateFontTextureAndMeta();
     RenderContext::rendering_presets presets = {
         .width = 1280,
         .height = 720,

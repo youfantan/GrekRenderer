@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dx12_framework.h"
+#include "../common/font_loader.h"
 
 class DX12UI {
 private:
@@ -13,25 +14,18 @@ private:
         float u, v;
     };
     std::vector<Vertex> vertices_ = {
-        {-1.0f, 1.0f, 0.0f, 0.0f},
-        {1.0f, 1.0f, 1.0f, 0.0f},
-        {-1.0f, -1.0f, 0.0f, 1.0f},
-        {1.0f, -1.0f, 1.0f, 1.0f}
+        {-0.5f, 0.5f, 0.0f, 0.0f},
+        {0.5f, 0.5f, 1.0f, 0.0f},
+        {-0.5f, -0.5f, 0.0f, 1.0f},
+        {0.5f, -0.5f, 1.0f, 1.0f}
     };
     std::vector<uint32_t> indices_ = {
         0, 1, 2,
         2, 1, 3
     };
 
-    struct SDFCoord {
-        float tex_u0;
-        float tex_v0;
-        float tex_u1;
-        float tex_v1;
-    };
-
     struct TextInfo {
-        uint32_t ascii;
+        uint32_t char_index;
         uint32_t x;
         uint32_t y;
         uint32_t size;
@@ -40,15 +34,17 @@ private:
     struct alignas(256) ScreenInfo {
         float width;
         float height;
+        float atlas_font_size;
     };
-    std::vector<SDFCoord> coords_{256};
+    std::vector<FontLoader::SDFMeta> coords_;
+    std::unordered_map<wchar_t, uint32_t> char_mapping_;
     ScreenInfo sc_info_;
     TextInfo text_info_[1024];
     uint32_t text_length_{0};
 public:
-    DX12UI(DX12Application& dx_app, TextureManager& tex_mgr, ShaderManager& shd_mgr) : dx_app_(dx_app), tex_mgr_(tex_mgr), shd_mgr_(shd_mgr), res_mgr_(dx_app.GetRenderContext().GetGPUResourceManager()){
-        LoadSDFCoords();
-        auto sdf = tex_mgr_.get("sdf.png");
+    DX12UI(DX12Application& dx_app, std::string_view font_name, TextureManager& tex_mgr, ShaderManager& shd_mgr) : dx_app_(dx_app), tex_mgr_(tex_mgr), shd_mgr_(shd_mgr), res_mgr_(dx_app.GetRenderContext().GetGPUResourceManager()){
+        LoadSDFCoords(font_name);
+        auto sdf = tex_mgr_.get(std::format("{}_tex.png", font_name));
         auto vs = shd_mgr_.get("ui.vs");
         auto ps = shd_mgr_.get("ui.ps");
         sc_info_.width = dx_app_.GetRenderPresets().width;
@@ -86,40 +82,28 @@ public:
 
     void UpdateUI() {
         Pipeline& ui_pipeline = dx_app_.GetRenderContext().SelectPipeline("ui");
-        res_mgr_.ModifyCBuffer("text_info", text_info_, _countof(text_info_));
+        res_mgr_.ModifyCBuffer("text_info", text_info_, text_length_);
         ui_pipeline.SetDrawInstancesCount(text_length_);
         text_length_ = 0;
     }
 
-    void LoadSDFCoords() {
-        std::filesystem::path file("textures/sdf_uv_coords.txt");
-        std::ifstream input(file, std::ios::in | std::ios::binary);
-        if (!input) {
-            std::cout << "SDF UV Coords not found" << std::endl;
-        }
-        while (!input.eof()) {
-            std::string line;
-            std::getline(input, line);
-            std::stringstream ss(line);
-            std::string ascii;
-            SDFCoord coord;
-            ss >> ascii >> coord.tex_u0 >> coord.tex_v0 >> coord.tex_u1 >> coord.tex_v1;
-            uint32_t ascii_index = 0;
-            if (ascii == "_SPACE") {
-                ascii_index = ' ';
-            } else {
-                ascii_index = ascii[0];
-            }
-            coords_[ascii_index] = coord;
+    void LoadSDFCoords(std::string_view font_name) {
+        FontLoader::ReadFontMeta(coords_, sc_info_.atlas_font_size, font_name);
+        for (int i = 0; i < coords_.size(); ++i) {
+            char_mapping_[coords_[i].character] = i;
         }
     }
 
-    void DrawString(std::string_view str, uint32_t x, uint32_t y, uint32_t size) {
+    void DrawString(std::wstring_view str, uint32_t x, uint32_t y, uint32_t size) {
+        uint32_t advance = 0;
         for (int i = 0; i < str.size(); ++i) {
-            text_info_[i].ascii = str[i];
-            text_info_[i].x = x + i * size;
-            text_info_[i].y = y;
-            text_info_[i].size = size;
+            auto jumping = char_mapping_[str[i]];
+            auto c = str[i];
+            text_info_[text_length_].char_index = jumping;
+            text_info_[text_length_].x = x + advance;
+            text_info_[text_length_].y = y;
+            text_info_[text_length_].size = size;
+            advance += coords_[jumping].advance / (sc_info_.atlas_font_size / size);
             ++text_length_;
         }
     }
