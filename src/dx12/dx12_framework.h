@@ -646,41 +646,167 @@ public:
     }
 };
 
-class RenderContext {
+using RenderPreset = struct {
+    uint32_t width;
+    uint32_t height;
+    bool enable_msaa_4x;
+    bool enable_full_screen;
+    bool enable_v_sync;
+    float clear_color[4];
+    HWND hwnd;
+};
+
+class RenderTarget {
+private:
+    ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12Resource> back_buffer_;
+    ComPtr<ID3D12Resource> msaa_buffer_;
+    ComPtr<ID3D12Resource> depth_buffer_;
+    ComPtr<ID3D12DescriptorHeap> rtv_heap_;
+    ComPtr<ID3D12DescriptorHeap> msaa_rtv_heap_;
+    ComPtr<ID3D12DescriptorHeap> dsv_heap_;
+    ComPtr<ID3D12GraphicsCommandList> render_list_;
+    ComPtr<ID3D12CommandAllocator> render_alloc_;
+    GPUFence fence_;
+    uint32_t index_;
+    uint32_t rtv_size_;
+    uint32_t dsv_size_;
+    RenderPreset preset_;
+
 public:
-    using rendering_presets = struct {
-        uint32_t width;
-        uint32_t height;
-        bool enable_msaa_4x;
-        float clear_color[4];
-        HWND hwnd;
-    };
+    RenderTarget() = default;
+    RenderTarget(RenderTarget&&) = default;
+    void Initialize(uint32_t index, ComPtr<ID3D12Device>& device, const RenderPreset& preset, ComPtr<IDXGISwapChain3>& swapchain, ComPtr<ID3D12DescriptorHeap>& rtv_heap, ComPtr<ID3D12DescriptorHeap>& msaa_rtv_heap, ComPtr<ID3D12DescriptorHeap>& dsv_heap) {
+        preset_ = preset;
+        index_ = index;
+        device_ = device;
+        rtv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        dsv_size_ = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        rtv_heap_ = rtv_heap;
+        msaa_rtv_heap_ = msaa_rtv_heap;
+        dsv_heap_ = dsv_heap;
+        fence_.Initialize(device_);
+        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_alloc_)));
+        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_alloc_.Get(), nullptr, IID_PPV_ARGS(&render_list_)));
+        swapchain->GetBuffer(index, IID_PPV_ARGS(&back_buffer_));
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+        rtv_handle.ptr += rtv_size_ * index;
+        device_->CreateRenderTargetView(back_buffer_.Get(), nullptr, rtv_handle);
+        if (preset.enable_msaa_4x) {
+            auto msaa_rt_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            auto msaa_rt_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, preset_.width, preset_.height, 1, 1, 4);
+            msaa_rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            D3D12_CLEAR_VALUE msaa_clear_value = {};
+            memcpy(&msaa_clear_value.Color, preset.clear_color, sizeof(float) * 4);
+            msaa_clear_value.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            CHECKHR(device_->CreateCommittedResource(
+                &msaa_rt_prop,
+                D3D12_HEAP_FLAG_NONE,
+                &msaa_rt_desc,
+                D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                &msaa_clear_value,
+                IID_PPV_ARGS(&msaa_buffer_)));
+            msaa_buffer_->SetName(L"MSAA RenderTarget");
+            D3D12_DESCRIPTOR_HEAP_DESC msaa_rtv_heap_desc{};
+            D3D12_RENDER_TARGET_VIEW_DESC msaa_rtv_desc;
+            msaa_rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            msaa_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+            D3D12_CPU_DESCRIPTOR_HANDLE msaa_rtv_handle = msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+            msaa_rtv_handle.ptr += rtv_size_ * index;
+            device_->CreateRenderTargetView(msaa_buffer_.Get(), &msaa_rtv_desc, msaa_rtv_handle);
+        }
+        D3D12_RESOURCE_DESC depth_heap_desc = {};
+        depth_heap_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        depth_heap_desc.Alignment = 0;
+        depth_heap_desc.Width = preset_.width;
+        depth_heap_desc.Height = preset_.height;
+        depth_heap_desc.DepthOrArraySize = 1;
+        depth_heap_desc.MipLevels = 1;
+        depth_heap_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        depth_heap_desc.SampleDesc.Count = preset_.enable_msaa_4x ? 4 : 1;
+        depth_heap_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        depth_heap_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        auto depth_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        D3D12_CLEAR_VALUE opt_clear = {};
+        opt_clear.Format = DXGI_FORMAT_D32_FLOAT;
+        opt_clear.DepthStencil.Depth = 1.0f;
+        opt_clear.DepthStencil.Stencil = 0;
+        CHECKHR(device_->CreateCommittedResource(
+            &depth_heap_prop,
+            D3D12_HEAP_FLAG_NONE,
+            &depth_heap_desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &opt_clear,
+            IID_PPV_ARGS(&depth_buffer_)
+        ));
+        depth_buffer_->SetName(L"Depth Buffer");
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+        dsv_handle.ptr += dsv_size_ * index;
+        device_->CreateDepthStencilView(depth_buffer_.Get(), nullptr, dsv_handle);
+        render_list_->Close();
+    }
+
+    ComPtr<ID3D12GraphicsCommandList>& GetRenderCommandList() {
+        return render_list_;
+    }
+
+    ComPtr<ID3D12CommandAllocator>& GetRenderCommandAllocator() {
+        return render_alloc_;
+    }
+
+    ComPtr<ID3D12Resource>& GetBackBuffer() {
+        return back_buffer_;
+    }
+
+    ComPtr<ID3D12Resource>& GetMSAABackBuffer() {
+        return msaa_buffer_;
+    }
+
+    ComPtr<ID3D12Resource>& GetDepthBuffer() {
+        return depth_buffer_;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandleForCPU() {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += rtv_size_ * index_;
+        return handle;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE GetMSAARTVHandleForCPU() {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += rtv_size_ * index_;
+        return handle;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE GetDSVHandleForCPU() {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += dsv_size_ * index_;
+        return handle;
+    }
+
+    GPUFence& GetRenderFence() {
+        return fence_;
+    }
+};
+
+class RenderContext {
 private:
     ComPtr<IDXGIFactory6> factory_;
     ComPtr<IDXGIAdapter> adapter_;
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS ms_lv_;
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12CommandQueue> render_queue_;
-    ComPtr<ID3D12CommandAllocator> render_alloc_;
-    ComPtr<ID3D12GraphicsCommandList> render_list_;
     ComPtr<IDXGISwapChain3> swapchain_;
-    ComPtr<ID3D12Resource> buffers_[2];
-    ComPtr<ID3D12Resource> msaa_rt_;
     ComPtr<ID3D12DescriptorHeap> rtv_heap_;
     ComPtr<ID3D12DescriptorHeap> msaa_rtv_heap_;
     ComPtr<ID3D12DescriptorHeap> dsv_heap_;
-    ComPtr<ID3D12Resource> depth_buffer_;
+    RenderTarget rts_[2];
 
-    uint32_t fb_index_;
-    size_t rtv_size_;
-    size_t dsv_size_;
-
-    GPUFence graphics_fence_;
     std::unordered_map<std::string, Pipeline> pipelines_;
-    const rendering_presets& presets_;
+    const RenderPreset& presets_;
     GPUResourceManager gpu_resource_mgr_;
 public:
-    RenderContext(const rendering_presets& presets): presets_(presets) {}
+    RenderContext(const RenderPreset& presets): presets_(presets) {}
 
     void Initialize() {
         std::cout << "initializing directx12" << std::endl;
@@ -721,8 +847,8 @@ public:
         sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // format: RGBA32
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; // use for render target
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // discard pixels when swap
-        //if (p.enable_msaa_4x) sd.SampleDesc.Count = 4;
         sd.SampleDesc.Count = 1;
+        sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         sd.Scaling = DXGI_SCALING_NONE; // no scaling, just for debug
 
         // Create a commmand queue with direct list
@@ -730,99 +856,29 @@ public:
         qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         CHECKHR(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&render_queue_)));
         render_queue_->SetName(L"Render Queue");
-        CHECKHR(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_alloc_)));
-        CHECKHR(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_alloc_.Get(), nullptr, IID_PPV_ARGS(&render_list_)));
-
         gpu_resource_mgr_.Initialize(device_, render_queue_);
-        graphics_fence_.Initialize(device_);
-
         // Create swapchain with lower level, then convert to higher level to support GetCurrentBackBufferIndex
         ComPtr<IDXGISwapChain1> sc;
         CHECKHR(factory_->CreateSwapChainForHwnd(render_queue_.Get(), presets_.hwnd, &sd, nullptr, nullptr, &sc));
         CHECKHR(sc.As(&swapchain_));
-        fb_index_ = swapchain_->GetCurrentBackBufferIndex();
-
         // Create RTV Heap for swapchain buffers
         D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
         rtv_heap_desc.NumDescriptors = 2;
         rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         CHECKHR(device_->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_heap_)));
-        // Query RTV size
-        rtv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
-        // Create a RTV for each swapchain buffer
-        auto handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-        for (int i = 0; i < 2; ++i) {
-            CHECKHR(swapchain_->GetBuffer(i, IID_PPV_ARGS(&buffers_[i])));
-            buffers_[i]->SetName(L"Back Buffer");
-            device_->CreateRenderTargetView(buffers_[i].Get(), nullptr, handle);
-            handle.ptr += rtv_size_;
-        }
-
-        if (presets_.enable_msaa_4x) {
-            auto msaa_rt_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-            auto msaa_rt_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, presets_.width, presets_.height, 1, 1, 4);
-            msaa_rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-            D3D12_CLEAR_VALUE msaa_clear_value = {};
-            memcpy(&msaa_clear_value.Color, presets_.clear_color, sizeof(float) * 4);
-            msaa_clear_value.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            CHECKHR(device_->CreateCommittedResource(
-                &msaa_rt_prop,
-                D3D12_HEAP_FLAG_NONE,
-                &msaa_rt_desc,
-                D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
-                &msaa_clear_value,
-                IID_PPV_ARGS(&msaa_rt_)));
-            msaa_rt_->SetName(L"MSAA RenderTarget");
-            D3D12_DESCRIPTOR_HEAP_DESC msaa_rtv_heap_desc{};
-            msaa_rtv_heap_desc.NumDescriptors = 1;
-            msaa_rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-            CHECKHR(device_->CreateDescriptorHeap(&msaa_rtv_heap_desc, IID_PPV_ARGS(msaa_rtv_heap_.GetAddressOf())));
-            D3D12_RENDER_TARGET_VIEW_DESC msaa_rtv_desc;
-            msaa_rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            msaa_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
-            device_->CreateRenderTargetView(msaa_rt_.Get(), &msaa_rtv_desc, msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart());
-        }
-
-        // Create depth/stencil buffer
-        D3D12_RESOURCE_DESC depth_heap_desc = {};
-        depth_heap_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        depth_heap_desc.Alignment = 0;
-        depth_heap_desc.Width = presets_.width;
-        depth_heap_desc.Height = presets_.height;
-        depth_heap_desc.DepthOrArraySize = 1;
-        depth_heap_desc.MipLevels = 1;
-        depth_heap_desc.Format = DXGI_FORMAT_D32_FLOAT;
-        depth_heap_desc.SampleDesc.Count = presets_.enable_msaa_4x ? 4 : 1;
-        depth_heap_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        depth_heap_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-        auto depth_heap_prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-        D3D12_CLEAR_VALUE opt_clear = {};
-        opt_clear.Format = DXGI_FORMAT_D32_FLOAT;
-        opt_clear.DepthStencil.Depth = 1.0f;
-        opt_clear.DepthStencil.Stencil = 0;
-
-        CHECKHR(device_->CreateCommittedResource(
-            &depth_heap_prop,
-            D3D12_HEAP_FLAG_NONE,
-            &depth_heap_desc,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            &opt_clear,
-            IID_PPV_ARGS(&depth_buffer_)
-        ));
-        depth_buffer_->SetName(L"Depth Buffer");
-
+        D3D12_DESCRIPTOR_HEAP_DESC msaa_rtv_heap_desc{};
+        msaa_rtv_heap_desc.NumDescriptors = 2;
+        msaa_rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        CHECKHR(device_->CreateDescriptorHeap(&msaa_rtv_heap_desc, IID_PPV_ARGS(msaa_rtv_heap_.GetAddressOf())));
         // Create DSV Heap for depth buffer
         D3D12_DESCRIPTOR_HEAP_DESC dsv_desc = {};
-        dsv_desc.NumDescriptors = 1;
+        dsv_desc.NumDescriptors = 2;
         dsv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         dsv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         CHECKHR(device_->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsv_heap_)));
-        device_->CreateDepthStencilView(depth_buffer_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
-        // Query DSV size
-        dsv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-        render_list_->Close();
+        for (int i = 0; i < 2; ++i) {
+            rts_[i].Initialize(i, device_, presets_, swapchain_, rtv_heap_, msaa_rtv_heap_, dsv_heap_);
+        }
     }
 
     Pipeline& CreatePipeline(const std::string& pipeline_id, const Pipeline::pipeline_init_t& init) {
@@ -835,94 +891,102 @@ public:
     }
 
     void Render() {
-        graphics_fence_.Wait();
-        CHECKHR(render_alloc_->Reset());
-        CHECKHR(render_list_->Reset(render_alloc_.Get(), nullptr));
+        auto& rt = rts_[swapchain_->GetCurrentBackBufferIndex()];
+        auto& fence = rt.GetRenderFence();
+        fence.Wait();
+        auto& render_list = rt.GetRenderCommandList();
+        auto& render_alloc = rt.GetRenderCommandAllocator();
+        auto& back_buffer = rt.GetBackBuffer();
+        auto& msaa_buffer = rt.GetMSAABackBuffer();
+        auto& depth_buffer = rt.GetDepthBuffer();
+        auto rtv = rt.GetRTVHandleForCPU();
+        auto dsv = rt.GetDSVHandleForCPU();
+        auto msaa_rtv = rt.GetMSAARTVHandleForCPU();
+        CHECKHR(render_alloc->Reset());
+        CHECKHR(render_list->Reset(render_alloc.Get(), nullptr));
         // Set viewport and scissor rect
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)presets_.width, (float)presets_.height, 0.0f, 1.0f };
         D3D12_RECT scissor_rect = { 0, 0, static_cast<LONG>(presets_.width), static_cast<LONG>(presets_.height) };
-        render_list_->RSSetViewports(1, &viewport);
-        render_list_->RSSetScissorRects(1, &scissor_rect);
+        render_list->RSSetViewports(1, &viewport);
+        render_list->RSSetScissorRects(1, &scissor_rect);
 
         if (presets_.enable_msaa_4x) {
-            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(msaa_rt_.Get(),
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                msaa_buffer.Get(),
     D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            render_list_->ResourceBarrier(1, &barrier);
+            render_list->ResourceBarrier(1, &barrier);
         } else {
             // Set backbuffer to Render Target
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                buffers_[fb_index_].Get(),
+                back_buffer.Get(),
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET);
-            render_list_->ResourceBarrier(1, &barrier);
+            render_list->ResourceBarrier(1, &barrier);
         }
-
-        // Offset and get descriptor
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-        D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-        rtv.ptr += fb_index_ * rtv_size_;
-        render_list_->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        render_list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         if (presets_.enable_msaa_4x) {
-            D3D12_CPU_DESCRIPTOR_HANDLE msaa_rtv = msaa_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-            render_list_->OMSetRenderTargets(1, &msaa_rtv, FALSE, &dsv);
-            render_list_->ClearRenderTargetView(msaa_rtv, presets_.clear_color, 0, nullptr);
+            render_list->OMSetRenderTargets(1, &msaa_rtv, FALSE, &dsv);
+            render_list->ClearRenderTargetView(msaa_rtv, presets_.clear_color, 0, nullptr);
         } else {
             // Clear Render Target
-            render_list_->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-            render_list_->ClearRenderTargetView(rtv, presets_.clear_color, 0, nullptr);
+            render_list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+            render_list->ClearRenderTargetView(rtv, presets_.clear_color, 0, nullptr);
         }
         for (auto& pair : pipelines_) {
             auto& pipeline = pair.second;
-            render_list_->SetPipelineState(pipeline.GetPSO().Get());
-            render_list_->SetGraphicsRootSignature(pipeline.GetRootSignature().Get());
+            render_list->SetPipelineState(pipeline.GetPSO().Get());
+            render_list->SetGraphicsRootSignature(pipeline.GetRootSignature().Get());
             ID3D12DescriptorHeap* heaps[] = {pipeline.GetDescriptorHeap().GetHeap().Get()};
-            render_list_->SetDescriptorHeaps(1, heaps);
+            render_list->SetDescriptorHeaps(1, heaps);
             auto handle = pipeline.GetDescriptorHeap().GetHeap()->GetGPUDescriptorHandleForHeapStart();
-            render_list_->SetGraphicsRootDescriptorTable(0, handle);
+            render_list->SetGraphicsRootDescriptorTable(0, handle);
             handle.ptr += pipeline.GetDescriptorHeap().GetSRVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
-            render_list_->SetGraphicsRootDescriptorTable(1, handle);
+            render_list->SetGraphicsRootDescriptorTable(1, handle);
             handle.ptr += pipeline.GetDescriptorHeap().GetCBVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
-            render_list_->SetGraphicsRootDescriptorTable(2, handle);
+            render_list->SetGraphicsRootDescriptorTable(2, handle);
             // Use triangle Topology
-            render_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            render_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             // Load vertices and indices
-            render_list_->IASetVertexBuffers(0, 1, &pipeline.GetVertexBufferView());
-            render_list_->IASetIndexBuffer(&pipeline.GetIndexBufferView());
+            render_list->IASetVertexBuffers(0, 1, &pipeline.GetVertexBufferView());
+            render_list->IASetIndexBuffer(&pipeline.GetIndexBufferView());
             // Draw call
-            render_list_->DrawIndexedInstanced(pipeline.GetInstanceIndicesCount(), pipeline.GetDrawInstancesCount(), 0, 0, 0);
+            render_list->DrawIndexedInstanced(pipeline.GetInstanceIndicesCount(), pipeline.GetDrawInstancesCount(), 0, 0, 0);
         }
         if (presets_.enable_msaa_4x) {
             D3D12_RESOURCE_BARRIER barriers[2] = {
                 CD3DX12_RESOURCE_BARRIER::Transition(
-                    msaa_rt_.Get(),
+                    msaa_buffer.Get(),
                     D3D12_RESOURCE_STATE_RENDER_TARGET,
                     D3D12_RESOURCE_STATE_RESOLVE_SOURCE),
                 CD3DX12_RESOURCE_BARRIER::Transition(
-                    buffers_[fb_index_].Get(),
+                    back_buffer.Get(),
                     D3D12_RESOURCE_STATE_PRESENT,
                     D3D12_RESOURCE_STATE_RESOLVE_DEST)
                 };
-            render_list_->ResourceBarrier(2, barriers);
-            render_list_->ResolveSubresource(buffers_[fb_index_].Get(), 0, msaa_rt_.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+            render_list->ResourceBarrier(2, barriers);
+            render_list->ResolveSubresource(back_buffer.Get(), 0, msaa_buffer.Get(), 0, DXGI_FORMAT_R8G8B8A8_UNORM);
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                buffers_[fb_index_].Get(),
+                back_buffer.Get(),
                 D3D12_RESOURCE_STATE_RESOLVE_DEST,
                 D3D12_RESOURCE_STATE_PRESENT);
-            render_list_->ResourceBarrier(1, &barrier);
+            render_list->ResourceBarrier(1, &barrier);
         } else {
             D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                buffers_[fb_index_].Get(),
+                back_buffer.Get(),
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT);
-            render_list_->ResourceBarrier(1, &barrier);
+            render_list->ResourceBarrier(1, &barrier);
         }
-        CHECKHR(render_list_->Close());
-        ID3D12CommandList* lists[] = { render_list_.Get() };
+        CHECKHR(render_list->Close());
+        ID3D12CommandList* lists[] = { render_list.Get() };
         // Execute and present
         render_queue_->ExecuteCommandLists(1, lists);
-        CHECKHR(swapchain_->Present(1, 0));
-        graphics_fence_.Insert(render_queue_);
-        fb_index_ = swapchain_->GetCurrentBackBufferIndex();
+        if (presets_.enable_v_sync) {
+            CHECKHR(swapchain_->Present(1, 0));
+        } else {
+            CHECKHR(swapchain_->Present(0, DXGI_PRESENT_ALLOW_TEARING));
+        }
+        fence.Insert(render_queue_);
         gpu_resource_mgr_.DeferredRelease();
     }
 
@@ -935,17 +999,19 @@ public:
     }
 
     ~RenderContext() {
-        graphics_fence_.Wait();
+        for (auto& rt : rts_) {
+            rt.GetRenderFence().Wait();
+        }
     }
 };
 
 class DX12Application {
 protected:
     RenderContext render_ctx_;
-    RenderContext::rendering_presets& presets_;
+    RenderPreset& presets_;
     FPSCounter fpsc_;
 public:
-    explicit DX12Application(RenderContext::rendering_presets& presets) : presets_(presets), render_ctx_(presets) {}
+    explicit DX12Application(RenderPreset& presets) : presets_(presets), render_ctx_(presets) {}
     RenderContext& GetRenderContext() {
         return render_ctx_;
     }
@@ -968,7 +1034,7 @@ public:
         }
     }
 
-    const RenderContext::rendering_presets& GetRenderPresets() const {
+    const RenderPreset& GetRenderPresets() const {
         return presets_;
     }
 

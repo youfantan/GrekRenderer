@@ -14,13 +14,14 @@
 
 
 int main() {
-
     FontLoader loader("Lanting");
     loader.GenerateFontTextureAndMeta();
-    RenderContext::rendering_presets presets = {
+    RenderPreset presets = {
         .width = 1280,
         .height = 720,
-        .enable_msaa_4x = true,
+        .enable_msaa_4x = false,
+        .enable_full_screen = false,
+        .enable_v_sync = true,
         .clear_color = {0.5f, 0.5f, 0.5f, 1.0f},
         .hwnd = nullptr,
     };
