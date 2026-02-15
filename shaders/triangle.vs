@@ -29,10 +29,11 @@ struct PSIn {
 PSIn main(VSIn v, uint instance : SV_InstanceID)
 {
     PSIn o;
-    row_major float4x4 wvp = mul(WorldMatrix[instance], ViewMatrix);
+    row_major float4x4 wm = WorldMatrix[instance];
+    row_major float4x4 wvp = mul(wm, ViewMatrix);
     o.pos = mul(float4(v.pos, 1.0), wvp);
-    o.rpos = mul(float4(v.pos, 1.0), WorldMatrix[instance]);
-    o.normal = mul(float4(v.normal, 0.0), WorldMatrix[instance]);
+    o.rpos = mul(float4(v.pos, 1.0), wm);
+    o.normal = mul(float4(v.normal, 0.0), wm);
     o.uv = v.uv;
     o.iid = instance;
     return o;

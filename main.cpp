@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "src/common/font_loader.h"
+#include "src/common/logger.h"
 #include "src/dx12/dx12_framework.h"
 #include "src/dx12/square_pyramid_sample.hpp"
 #include "src/win32/common.h"
@@ -14,8 +15,12 @@
 
 
 int main() {
-    FontLoader loader("Lanting");
-    loader.GenerateFontTextureAndMeta();
+    // FontLoader loader("Lanting");
+    // loader.GenerateFontTextureAndMeta();
+    log_init("grek_render.log");
+    atexit([]() {
+        log_close();
+    });
     RenderPreset presets = {
         .width = 1280,
         .height = 720,

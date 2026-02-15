@@ -15,6 +15,8 @@
 #include <limits>
 #include <stb_image.h>
 #include <unordered_map>
+#include <concepts>
+#include <functional>
 
 #include "../win32/common.h"
 #include "../win32/window.h"
@@ -393,146 +395,256 @@ public:
     }
 };
 
-class DescriptorHeap {
+class ITextureHeap {};
+
+template<uint32_t DescriptorCount>
+class TextureHeap : public ITextureHeap {
 private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12DescriptorHeap> heap_;
-    uint32_t srv_count_;
-    uint32_t cbv_count_;
-    uint32_t uav_count_;
     uint32_t descriptor_size_;
-    uint32_t srv_off_;
-    uint32_t cbv_off_;
-    uint32_t uav_off_;
+    uint32_t off_{};
 public:
-    DescriptorHeap(ComPtr<ID3D12Device>& device, uint32_t srv_count, uint32_t cbv_count, uint32_t uav_count) : device_(device), srv_count_(srv_count), cbv_count_(cbv_count), uav_count_(uav_count) {
-        D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-        srv_heap_desc.NumDescriptors = srv_count_ * 3;
-        srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        CHECKHR(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&heap_)));
+    TextureHeap(ComPtr<ID3D12Device>& device) : device_(device) {
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {};
+        heap_desc.NumDescriptors = DescriptorCount;
+        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        CHECKHR(device_->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap_)));
         descriptor_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        srv_off_ = 0;
-        cbv_off_ = 0 + srv_count;
-        uav_off_ = 0 + srv_count + cbv_count;
     }
-    /* Bind a descriptor for texture to the descriptor heap then returns the binding register number */
-    uint32_t BindTextureAsSRV(const GPUResourceManager::gpu_resource_handle_t& hres) {
+    /* Bind a descriptor for texture to the descriptor heap */
+    bool BindTexture(const GPUResourceManager::gpu_resource_handle_t& hres) {
+        if (off_ == DescriptorCount) {
+            LOG_ERROR("Failed to bind Texture as SRV in the descriptor heap because out of range");
+            return false;
+        }
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
         srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv_desc.Format = *static_cast<DXGI_FORMAT*>(hres.ptr->ext_info);
         srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv_desc.Texture2D.MipLevels = 1;
         D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += srv_off_ * descriptor_size_;
+        handle.ptr += off_ * descriptor_size_;
         device_->CreateShaderResourceView(hres.ptr->res.Get(), &srv_desc, handle);
-        uint32_t bind_reg = srv_off_;
-        ++srv_off_;
-        return bind_reg;
-    }
-
-    uint32_t BindBufferAsSRV(const GPUResourceManager::gpu_resource_handle_t& hres) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srv_desc.Buffer.FirstElement = 0;
-        srv_desc.Buffer.StructureByteStride = *reinterpret_cast<uint32_t*>(hres.ptr->ext_info);
-        srv_desc.Buffer.NumElements = hres.ptr->size / srv_desc.Buffer.StructureByteStride;
-        srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += srv_off_ * descriptor_size_;
-        device_->CreateShaderResourceView(hres.ptr->res.Get(), &srv_desc, handle);
-        uint32_t bind_reg = srv_off_;
-        ++srv_off_;
-        return bind_reg;
-    }
-
-    uint32_t BindBufferAsCBV(const GPUResourceManager::gpu_resource_handle_t& hres) {
-        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
-        cbv_desc.BufferLocation = hres.ptr->res->GetGPUVirtualAddress();
-        cbv_desc.SizeInBytes = hres.ptr->size;
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += cbv_off_ * descriptor_size_;
-        device_->CreateConstantBufferView(&cbv_desc, handle);
-        uint32_t bind_reg = cbv_off_ - srv_count_;
-        ++cbv_off_;
-        return bind_reg;
+        ++off_;
+        return true;
     }
 
     ComPtr<ID3D12DescriptorHeap> GetHeap() {
         return heap_;
     }
 
-    uint32_t GetDescriptorSize() {
+    uint32_t GetDescriptorSize() const {
         return descriptor_size_;
     }
 
-    uint32_t GetSRVCount() const {
-        return srv_count_;
+    uint32_t GetDescriptorCount() const {
+        return DescriptorCount;
     }
 
-    uint32_t GetCBVCount() const {
-        return cbv_count_;
+};
+
+template<typename T>
+concept DrawCallResourceBindingRoot = requires(T b, ComPtr<ID3D12GraphicsCommandList> list, uint32_t rpi) {
+    { T::MakeRootParam() } -> std::same_as<D3D12_ROOT_PARAMETER>;
+    { T::Apply(b, list, rpi) };
+};
+
+template<typename T>
+concept DrawCallResourceBindingStaticSampler = requires()
+{
+    { T::MakeStaticSampler() } -> std::same_as<D3D12_STATIC_SAMPLER_DESC>;
+};
+
+template<uint32_t R>
+class DrawCallSRVBinding {
+public:
+    static constexpr bool is_static_sampler = false;
+    D3D12_GPU_VIRTUAL_ADDRESS addr_;
+
+    DrawCallSRVBinding(GPUResourceManager::gpu_resource_handle_t& hres) : addr_(hres.ptr->res->GetGPUVirtualAddress()) {}
+
+    static D3D12_ROOT_PARAMETER MakeRootParam() {
+        D3D12_ROOT_PARAMETER p{};
+        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        p.Descriptor.ShaderRegister = R;
+        p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        return p;
     }
 
-    uint32_t GetUAVCount() const {
-        return uav_count_;
-    }
-
-    uint32_t GetAllDescriptorsCount() const {
-        return srv_count_ + cbv_count_ + uav_count_;
+    static void Apply(const DrawCallSRVBinding& b, ComPtr<ID3D12GraphicsCommandList>& list, uint32_t rpi) {
+        list->SetGraphicsRootShaderResourceView(rpi, b.addr_);
     }
 };
 
-class RootSignature {
-private:
-    ComPtr<ID3D12Device> device_;
-    ComPtr<ID3D12RootSignature> signature_;
-    std::vector<CD3DX12_ROOT_PARAMETER> root_params_;
-    std::vector<D3D12_STATIC_SAMPLER_DESC> samplers_;
-    CD3DX12_DESCRIPTOR_RANGE heap_range_[3]{};
+template<uint32_t R, uint32_t Size>
+class DrawCallTexturesBinding {
 public:
-    explicit RootSignature(ComPtr<ID3D12Device>& device) : device_(device) {}
+    static constexpr bool is_static_sampler = false;
+    TextureHeap<Size>& heap_;
+    DrawCallTexturesBinding(TextureHeap<Size>& heap) : heap_(heap) {}
 
-    void BindHeap(const DescriptorHeap& heap) {
-        heap_range_[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, heap.GetSRVCount(), 0);
-        heap_range_[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, heap.GetCBVCount(), 0);
-        heap_range_[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, heap.GetUAVCount(), 0);
-        CD3DX12_ROOT_PARAMETER p[3]{};
-        p[0].InitAsDescriptorTable(1, &heap_range_[0], D3D12_SHADER_VISIBILITY_ALL);
-        p[1].InitAsDescriptorTable(1, &heap_range_[1], D3D12_SHADER_VISIBILITY_ALL);
-        p[2].InitAsDescriptorTable(1, &heap_range_[2], D3D12_SHADER_VISIBILITY_ALL);
-        root_params_.push_back(p[0]);
-        root_params_.push_back(p[1]);
-        root_params_.push_back(p[2]);
+    static D3D12_ROOT_PARAMETER MakeRootParam() {
+        static CD3DX12_DESCRIPTOR_RANGE range{};
+        range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, Size, R);
+        CD3DX12_ROOT_PARAMETER p{};
+        p.InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_ALL);
+        return p;
     }
 
-    void BindStaticSampler(const D3D12_STATIC_SAMPLER_DESC& desc) {
-        samplers_.push_back(desc);
-    }
-
-    void Build() {
-        CD3DX12_ROOT_SIGNATURE_DESC desc{};
-        desc.Init(root_params_.size(), root_params_.data(), samplers_.size(), samplers_.data(), D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-        ComPtr<ID3DBlob> rs_blob, err_blob;
-        CHECKHR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &rs_blob, &err_blob));
-        CHECKHR(device_->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(), IID_PPV_ARGS(&signature_)));
-    }
-
-    ComPtr<ID3D12RootSignature> GetRootSignature() {
-        return signature_;
+    static void Apply(const DrawCallTexturesBinding& b, ComPtr<ID3D12GraphicsCommandList>& list, uint32_t rpi) {
+        ID3D12DescriptorHeap* heaps[] = {b.heap_.GetHeap().Get()};
+        list->SetDescriptorHeaps(1, heaps);
+        list->SetGraphicsRootDescriptorTable(rpi, b.heap_.GetHeap()->GetGPUDescriptorHandleForHeapStart());
     }
 };
 
-class Pipeline {
+template<uint32_t R>
+class DrawCallCBVBinding {
 public:
-    enum class render_binding_type {
-        CBV_HEAP,
-        SRV_HEAP,
-        UAV_HEAP
+    static constexpr bool is_static_sampler = false;
+    D3D12_GPU_VIRTUAL_ADDRESS addr_;
+
+    DrawCallCBVBinding(GPUResourceManager::gpu_resource_handle_t& hres) : addr_(hres.ptr->res->GetGPUVirtualAddress()) {}
+
+    static D3D12_ROOT_PARAMETER MakeRootParam() {
+        D3D12_ROOT_PARAMETER p{};
+        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        p.Descriptor.ShaderRegister = R;
+        p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        return p;
+    }
+
+    static void Apply(const DrawCallCBVBinding& b, ComPtr<ID3D12GraphicsCommandList>& list, uint32_t rpi) {
+        list->SetGraphicsRootConstantBufferView(rpi, b.addr_);
+    }
+};
+
+template<uint32_t R, D3D12_FILTER F>
+class DrawCallStaticSamplerBinding {
+public:
+    static constexpr bool is_static_sampler = true;
+    static D3D12_STATIC_SAMPLER_DESC MakeStaticSampler() {
+        return CD3DX12_STATIC_SAMPLER_DESC(R, F);
+    }
+};
+
+template<typename... Args>
+struct DrawCallLayout {
+    static constexpr uint32_t count = sizeof...(Args);
+
+    struct Bindings {
+        std::tuple<Args...> tup_;
+        explicit Bindings(Args... args) :tup_(std::make_tuple(args...)) {}
+
+        template<size_t INDEX>
+        void Set(std::tuple_element_t<INDEX, std::tuple<Args...>> binding) {
+            std::get<INDEX>(tup_) = binding;
+        }
+
+        void ApplyAll(ComPtr<ID3D12GraphicsCommandList> list) {
+            ApplyInternal(list, std::make_index_sequence<count>{});
+        }
+
+    private:
+        template<size_t... Is>
+        void ApplyInternal(ComPtr<ID3D12GraphicsCommandList> list, std::index_sequence<Is...>) {
+            uint32_t rpi = 0;
+            ((
+                [&] {
+                    using T = std::tuple_element_t<Is, std::tuple<Args...>>;
+                    if constexpr (!T::is_static_sampler) {
+                        T::Apply(std::get<Is>(tup_), list, rpi);
+                        rpi++;
+                    }
+                }()
+            ), ...);
+        }
     };
 
+    template<typename T, typename... Rest>
+    static void CollectRootParams(std::vector<D3D12_ROOT_PARAMETER>& params) {
+        if constexpr (!T::is_static_sampler) {
+            params.push_back(T::MakeRootParam());
+        }
+        if constexpr (sizeof...(Rest) > 0) CollectRootParams<Rest...>(params);
+    }
+
+    template<typename T, typename... Rest>
+    static void CollectStaticSamplers(std::vector<D3D12_STATIC_SAMPLER_DESC>& params) {
+        if constexpr (T::is_static_sampler) {
+            params.push_back(T::MakeStaticSampler());
+        }
+        if constexpr (sizeof...(Rest) > 0) CollectStaticSamplers<Rest...>(params);
+    }
+
+    static ComPtr<ID3D12RootSignature> CreateRootSignature(ComPtr<ID3D12Device>& device) {
+        std::vector<D3D12_ROOT_PARAMETER> root_parameters;
+        std::vector<D3D12_STATIC_SAMPLER_DESC> static_samplers;
+        CollectRootParams<Args...>(root_parameters);
+        CollectStaticSamplers<Args...>(static_samplers);
+        ComPtr<ID3D12RootSignature> signature;
+        CD3DX12_ROOT_SIGNATURE_DESC desc{};
+        desc.Init(root_parameters.size(), root_parameters.data(), static_samplers.size(), static_samplers.data(), D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        ComPtr<ID3DBlob> rs_blob, err_blob;
+        CHECKHR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &rs_blob, &err_blob));
+        CHECKHR(device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(), IID_PPV_ARGS(&signature)));
+        return signature;
+    }
+};
+
+template<typename Layout>
+class DrawCall {
+public:
+    using ia_buffer_view_t = struct {
+        D3D12_VERTEX_BUFFER_VIEW vb_view;
+        D3D12_INDEX_BUFFER_VIEW ib_view;
+        uint32_t instance_count;
+        uint32_t indices_count;
+    };
+private:
+    Layout::Bindings bindings_;
+    ia_buffer_view_t v_;
+public:
+    DrawCall(Layout::Bindings&& bindings) : bindings_(std::move(bindings)) {}
+    void BindIABuffer(GPUResourceManager::gpu_resource_handle_t& hvertex_buffer, GPUResourceManager::gpu_resource_handle_t& hindex_buffer, uint32_t instance_count) {
+        v_.vb_view.BufferLocation = hvertex_buffer.ptr->res->GetGPUVirtualAddress();
+        v_.vb_view.StrideInBytes = *reinterpret_cast<uint32_t*>(hvertex_buffer.ptr->ext_info);
+        v_.vb_view.SizeInBytes = hvertex_buffer.ptr->size;
+        v_.ib_view.BufferLocation = hindex_buffer.ptr->res->GetGPUVirtualAddress();
+        v_.ib_view.SizeInBytes = hindex_buffer.ptr->size;
+        v_.ib_view.Format = DXGI_FORMAT_R32_UINT;
+        v_.instance_count = instance_count;
+        v_.indices_count = v_.ib_view.SizeInBytes / sizeof(uint32_t);
+    }
+
+    static ComPtr<ID3D12RootSignature> CreateRootSignature(ComPtr<ID3D12Device> device) {
+        return Layout::CreateRootSignature(device);
+    }
+
+    void ApplyCommandList(ComPtr<ID3D12GraphicsCommandList> render_list) {
+        bindings_.ApplyAll(render_list);
+        render_list->IASetVertexBuffers(0, 1, &v_.vb_view);
+        render_list->IASetIndexBuffer(&v_.ib_view);
+        render_list->DrawIndexedInstanced(v_.indices_count, v_.instance_count, 0, 0, 0);
+    }
+
+    ia_buffer_view_t& GetIABufferView() {
+        return v_;
+    }
+};
+
+class IPipeline {
+public:
+    virtual ComPtr<ID3D12RootSignature> GetSignature() = 0;
+    virtual ComPtr<ID3D12PipelineState> GetPSO() = 0;
+    virtual void RecordRenderCommands(ComPtr<ID3D12GraphicsCommandList>) = 0;
+};
+
+template<typename Layout>
+class Pipeline : public IPipeline {
+public:
     using pipeline_init_t = struct {
         uint32_t srv_heap_size;
         uint32_t cbv_heap_size;
@@ -543,52 +655,38 @@ public:
 private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12PipelineState> pso_;
-    RootSignature signature_;
     D3D12_INPUT_LAYOUT_DESC layout_;
     ComPtr<ID3DBlob> vs_;
     ComPtr<ID3DBlob> ps_;
-    D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view_;
-    D3D12_INDEX_BUFFER_VIEW index_buffer_view_;
-    DescriptorHeap heap_;
+    ComPtr<ID3D12RootSignature> signature_;
+    std::vector<DrawCall<Layout>> drawcalls_;
     const pipeline_init_t init_;
-    uint32_t draw_instances_{0};
 public:
-    Pipeline(ComPtr<ID3D12Device>& device, const pipeline_init_t& init) : device_(device), init_(init), signature_(device), heap_(device, init.srv_heap_size, init.cbv_heap_size, init.uav_heap_size){}
+    Pipeline(ComPtr<ID3D12Device>& device, const pipeline_init_t& init) : device_(device), init_(init){}
     Pipeline(Pipeline&) = delete;
     Pipeline(Pipeline&& p) = default;
-    void BindStaticSampler(const D3D12_STATIC_SAMPLER_DESC& desc) {
-        signature_.BindStaticSampler(desc);
-    }
 
     void BindIALayout(D3D12_INPUT_LAYOUT_DESC desc) {
         layout_ = desc;
     }
 
-    void BindVertexBuffer(GPUResourceManager::gpu_resource_handle_t& hres) {
-        vertex_buffer_view_.BufferLocation = hres.ptr->res->GetGPUVirtualAddress();
-        vertex_buffer_view_.StrideInBytes = *reinterpret_cast<uint32_t*>(hres.ptr->ext_info);
-        vertex_buffer_view_.SizeInBytes = hres.ptr->size;
-    }
-
-    void BindIndexBuffer(GPUResourceManager::gpu_resource_handle_t& hres) {
-        index_buffer_view_.BufferLocation = hres.ptr->res->GetGPUVirtualAddress();
-        index_buffer_view_.SizeInBytes = hres.ptr->size;
-        index_buffer_view_.Format = DXGI_FORMAT_R32_UINT;
+    void BindDrawCall(DrawCall<Layout> drawcall) {
+        drawcalls_.push_back(drawcall);
     }
 
     void BindVertexShader(ComPtr<ID3DBlob> vs) {
         vs_ = vs;
     }
+
     void BindFragmentShader(ComPtr<ID3DBlob> ps) {
         ps_ = ps;
     }
 
     void Build() {
-        signature_.BindHeap(heap_);
-        signature_.Build();
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
         pso.InputLayout = layout_;
-        pso.pRootSignature = signature_.GetRootSignature().Get();
+        signature_ = DrawCall<Layout>::CreateRootSignature(device_);
+        pso.pRootSignature = signature_.Get();
         pso.VS = {vs_->GetBufferPointer() , vs_->GetBufferSize() };
         pso.PS = { ps_->GetBufferPointer(), ps_->GetBufferSize() };
         pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
@@ -613,37 +711,24 @@ public:
         CHECKHR(device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pso_)));
     }
 
-    void SetDrawInstancesCount(uint32_t count) {
-        draw_instances_ = count;
+    ComPtr<ID3D12RootSignature> GetSignature() override {
+        return signature_;
     }
 
-    ComPtr<ID3D12PipelineState> GetPSO() {
+    ComPtr<ID3D12PipelineState> GetPSO() override {
         return pso_;
     }
 
-    ComPtr<ID3D12RootSignature> GetRootSignature() {
-        return signature_.GetRootSignature();
+    void RecordRenderCommands(ComPtr<ID3D12GraphicsCommandList> render_list) override {
+        for (auto& drawcall : drawcalls_) {
+            drawcall.ApplyCommandList(render_list);
+        }
     }
 
-    D3D12_VERTEX_BUFFER_VIEW& GetVertexBufferView() {
-        return vertex_buffer_view_;
+    DrawCall<Layout>::ia_buffer_view_t& GetIABufferView(uint32_t drawcall_index) {
+        return  drawcalls_[drawcall_index].GetIABufferView();
     }
 
-    D3D12_INDEX_BUFFER_VIEW& GetIndexBufferView() {
-        return index_buffer_view_;
-    }
-
-    uint32_t GetInstanceIndicesCount() {
-        return index_buffer_view_.SizeInBytes / sizeof(uint32_t);
-    }
-
-    uint32_t GetDrawInstancesCount() {
-        return draw_instances_;
-    }
-
-    DescriptorHeap& GetDescriptorHeap() {
-        return heap_;
-    }
 };
 
 using RenderPreset = struct {
@@ -802,7 +887,8 @@ private:
     ComPtr<ID3D12DescriptorHeap> dsv_heap_;
     RenderTarget rts_[2];
 
-    std::unordered_map<std::string, Pipeline> pipelines_;
+    std::unordered_map<std::string, std::shared_ptr<IPipeline>> pipelines_;
+    std::vector<std::shared_ptr<ITextureHeap>> heaps_;
     const RenderPreset& presets_;
     GPUResourceManager gpu_resource_mgr_;
 public:
@@ -881,13 +967,25 @@ public:
         }
     }
 
-    Pipeline& CreatePipeline(const std::string& pipeline_id, const Pipeline::pipeline_init_t& init) {
-        auto [it, inserted] = pipelines_.try_emplace(pipeline_id, device_, init);
-        return it->second;
+    template<typename Layout>
+    std::shared_ptr<Pipeline<Layout>> CreatePipeline(const std::string& str, const Pipeline<Layout>::pipeline_init_t& init) {
+        auto pipeline = std::make_shared<Pipeline<Layout>>(device_, init);
+        pipelines_[str] = pipeline;
+        return pipeline;
     }
 
-    Pipeline& SelectPipeline(const std::string& pipeline_id) {
-        return pipelines_.at(pipeline_id);
+    template<typename Layout>
+    std::shared_ptr<Pipeline<Layout>> SelectPipeline(const std::string& str) {
+        auto it = pipelines_.find(str);
+        if (it == pipelines_.end()) return nullptr;
+        return std::static_pointer_cast<Pipeline<Layout>>(it->second);
+    }
+
+    template<uint32_t DescriptorCount>
+    std::shared_ptr<TextureHeap<DescriptorCount>> CreateTextureHeap() {
+        auto heap = std::make_shared<TextureHeap<DescriptorCount>>(TextureHeap<DescriptorCount>(device_));
+        heaps_.push_back(heap);
+        return heap;
     }
 
     void Render() {
@@ -934,23 +1032,16 @@ public:
         }
         for (auto& pair : pipelines_) {
             auto& pipeline = pair.second;
-            render_list->SetPipelineState(pipeline.GetPSO().Get());
-            render_list->SetGraphicsRootSignature(pipeline.GetRootSignature().Get());
-            ID3D12DescriptorHeap* heaps[] = {pipeline.GetDescriptorHeap().GetHeap().Get()};
-            render_list->SetDescriptorHeaps(1, heaps);
-            auto handle = pipeline.GetDescriptorHeap().GetHeap()->GetGPUDescriptorHandleForHeapStart();
-            render_list->SetGraphicsRootDescriptorTable(0, handle);
-            handle.ptr += pipeline.GetDescriptorHeap().GetSRVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
-            render_list->SetGraphicsRootDescriptorTable(1, handle);
-            handle.ptr += pipeline.GetDescriptorHeap().GetCBVCount() * pipeline.GetDescriptorHeap().GetDescriptorSize();
-            render_list->SetGraphicsRootDescriptorTable(2, handle);
+            render_list->SetPipelineState(pipeline->GetPSO().Get());
+            render_list->SetGraphicsRootSignature(pipeline->GetSignature().Get());
+            //ID3D12DescriptorHeap* heaps[] = {pipeline.GetDescriptorHeap().GetHeap().Get()};
+            //render_list->SetDescriptorHeaps(1, heaps);
+            int rdt_index = 0;
+
             // Use triangle Topology
             render_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             // Load vertices and indices
-            render_list->IASetVertexBuffers(0, 1, &pipeline.GetVertexBufferView());
-            render_list->IASetIndexBuffer(&pipeline.GetIndexBufferView());
-            // Draw call
-            render_list->DrawIndexedInstanced(pipeline.GetInstanceIndicesCount(), pipeline.GetDrawInstancesCount(), 0, 0, 0);
+            pipeline->RecordRenderCommands(render_list);
         }
         if (presets_.enable_msaa_4x) {
             D3D12_RESOURCE_BARRIER barriers[2] = {

@@ -82,7 +82,7 @@ public:
             exit(EXIT_FAILURE);
         }
 
-        std::vector<PyramidVertex> vertices = {
+        std::vector<PyramidVertex> pyramid_vertices = {
             { 0.0f,  0.5f,  0.0f, 0.5f, 0.0f, 0, 0, 0},
             { 0.5f, -0.5f, -0.5f, 1.0f, 1.0f, 0, 0, 0},
             {-0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0, 0, 0},
@@ -105,7 +105,7 @@ public:
             {-0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 0, 0, 0}
         };
 
-        std::vector<uint32_t> indices = {
+        std::vector<uint32_t> pyramid_indices = {
             0, 1, 2,
             3, 4, 5,
             6, 7, 8,
@@ -114,7 +114,20 @@ public:
             12, 14, 15
         };
 
-        GenerateNormal(vertices, indices);
+        std::vector<PyramidVertex> ground_vertices = {
+            {-0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 0, 0, 0},
+            {0.5f, 0.0f, 0.5f, 1.0f, 0.0f, 0, 0, 0},
+            {-0.5f, 0.0f, -0.5f, 0.0f, 1.0f, 0, 0, 0},
+            {0.5f, 0.0f, 0.5f, 1.0f, 1.0f, 0, 0, 0}
+        };
+
+        std::vector<uint32_t> ground_indices = {
+            0, 1, 2,
+            2, 1, 3
+        };
+
+        GenerateNormal(pyramid_vertices, pyramid_indices);
+        GenerateNormal(ground_vertices, ground_indices);
 
         D3D12_INPUT_ELEMENT_DESC pyramid_layout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -122,28 +135,38 @@ public:
             { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
         D3D12_INPUT_LAYOUT_DESC layout = {pyramid_layout, _countof(pyramid_layout)};
-        Pipeline::pipeline_init_t init = {32, 32, 32, presets.enable_msaa_4x};
-        Pipeline& default_pipeline = this->render_ctx_.CreatePipeline("default", init);
+        using PyramidDrawCallLayout = DrawCallLayout<
+            DrawCallTexturesBinding<0, 32>,
+            DrawCallCBVBinding<0>,
+            DrawCallCBVBinding<1>,
+            DrawCallStaticSamplerBinding<0, D3D12_FILTER_MIN_MAG_MIP_LINEAR>
+        >;
+        Pipeline<PyramidDrawCallLayout>::pipeline_init_t init = {32, 32, 0, presets.enable_msaa_4x};
+        std::shared_ptr<Pipeline<PyramidDrawCallLayout>> default_pipeline = this->render_ctx_.CreatePipeline<PyramidDrawCallLayout>("default", init);
         GPUResourceManager& gr_mgr = this->render_ctx_.GetGPUResourceManager();
-        DescriptorHeap& descriptor_heap = default_pipeline.GetDescriptorHeap();
-        auto vertices_res = gr_mgr.CreateVertexBuffer("pyramid_vertices", vertices.data(), vertices.size());
-        auto indices_res = gr_mgr.CreateIndexBuffer("pyramid_indices", indices.data(), indices.size());
+        auto py_vertices_res = gr_mgr.CreateVertexBuffer("pyramid_vertices", pyramid_vertices.data(), pyramid_vertices.size());
+        auto py_indices_res = gr_mgr.CreateIndexBuffer("pyramid_indices", pyramid_indices.data(), pyramid_indices.size());
+        auto gr_vertices_res = gr_mgr.CreateVertexBuffer("ground_vertices", ground_vertices.data(), ground_vertices.size());
+        auto gr_indices_res = gr_mgr.CreateIndexBuffer("ground_indices", ground_indices.data(), ground_indices.size());
         auto scene_res = gr_mgr.CreateCBuffer("scene", scene);
         auto world_res = gr_mgr.CreateCBuffer("world", world);
         auto basic_tex = gr_mgr.CreateTexture("pyramid_tex", basic.value().width, basic.value().height, basic.value().data);
         auto brick_tex = gr_mgr.CreateTexture("brick_tex", brick.value().width, brick.value().height, brick.value().data);
-        descriptor_heap.BindTextureAsSRV(basic_tex);
-        descriptor_heap.BindTextureAsSRV(brick_tex);
-        descriptor_heap.BindBufferAsCBV(scene_res);
-        descriptor_heap.BindBufferAsCBV(world_res);
-        default_pipeline.BindVertexBuffer(vertices_res);
-        default_pipeline.BindIndexBuffer(indices_res);
-        default_pipeline.BindStaticSampler(CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR));
-        default_pipeline.BindIALayout(layout);
-        default_pipeline.BindVertexShader(triangle_vs.value());
-        default_pipeline.BindFragmentShader(triangle_ps.value());
-        default_pipeline.SetDrawInstancesCount(2);
-        default_pipeline.Build();
+        auto heap = this->render_ctx_.CreateTextureHeap<32>();
+        heap->BindTexture(basic_tex);
+        heap->BindTexture(brick_tex);
+        PyramidDrawCallLayout::Bindings pyramid_bindings(*heap, scene_res, world_res, DrawCallStaticSamplerBinding<0, D3D12_FILTER_MIN_MAG_MIP_LINEAR>());
+        PyramidDrawCallLayout::Bindings ground_bindings(*heap, scene_res, world_res, DrawCallStaticSamplerBinding<0, D3D12_FILTER_MIN_MAG_MIP_LINEAR>());
+        DrawCall<PyramidDrawCallLayout> py_drawcall(std::move(pyramid_bindings));
+        py_drawcall.BindIABuffer(py_vertices_res, py_indices_res, 1);
+        DrawCall<PyramidDrawCallLayout> gr_drawcall(std::move(ground_bindings));
+        gr_drawcall.BindIABuffer(gr_vertices_res, gr_indices_res, 1);
+        default_pipeline->BindIALayout(layout);
+        default_pipeline->BindDrawCall(py_drawcall);
+        default_pipeline->BindDrawCall(gr_drawcall);
+        default_pipeline->BindVertexShader(triangle_vs.value());
+        default_pipeline->BindFragmentShader(triangle_ps.value());
+        default_pipeline->Build();
         ui_ = new DX12UI(*this, "Lanting", tex_mgr, shader_mgr);
         free_cam_ = new DX12FreeCamera({0.001f, 0.1f, static_cast<float>(presets_.width) / static_cast<float>(presets_.height), presets_.hwnd});
         world_ = new DX12World();
@@ -161,7 +184,7 @@ public:
         free_cam_->UpdatePerspective(delta_ms);
         memcpy(&scene.camera_pos[0], &free_cam_->GetCameraPosition().x, sizeof(float) * 3);
         XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(&world.world_matrix[0]), world_->GetObjectMatrix({0.0f, theta, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}));
-        XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(&world.world_matrix[1]), world_->GetObjectMatrix({0.0f, theta, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}));
+        XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(&world.world_matrix[1]), world_->GetObjectMatrix({0.0f, 0.0f, 0.0f}, {0.0f, -4.0f, 0.0f}, {1.0f, 1.0f, 1.0f}));
         XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4 *>(&scene.view_matrix), free_cam_->GetViewMatrix());
         ui_->UpdateUI();
     }

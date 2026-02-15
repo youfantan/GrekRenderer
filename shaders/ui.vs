@@ -18,9 +18,9 @@ struct SDFMeta {
     float advance;
 };
 
-Texture2D Tex : register(t0);
-StructuredBuffer<SDFMeta> UVData : register(t1);
-StructuredBuffer<CharInfo> Characters : register(t2);
+StructuredBuffer<SDFMeta> UVData : register(t0);
+StructuredBuffer<CharInfo> Characters : register(t1);
+Texture2D Tex : register(t2);
 
 cbuffer UI : register(b0)
 {

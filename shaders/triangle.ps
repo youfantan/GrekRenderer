@@ -12,7 +12,7 @@ cbuffer World: register(b1) {
     row_major float4x4 WorldMatrix[2];
 }
 
-Texture2D Textures[32] : register(t0);
+Texture2D Textures[2] : register(t0);
 SamplerState Sampler : register(s0);
 
 struct PSIn {

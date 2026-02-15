@@ -41,6 +41,14 @@ private:
     ScreenInfo sc_info_;
     TextInfo text_info_[1024];
     uint32_t text_length_{0};
+
+    using DrawCallLayout = DrawCallLayout<
+            DrawCallSRVBinding<0>,
+            DrawCallSRVBinding<1>,
+            DrawCallTexturesBinding<2, 32>,
+            DrawCallCBVBinding<0>,
+            DrawCallStaticSamplerBinding<0, D3D12_FILTER_MIN_MAG_MIP_LINEAR>
+        >;
 public:
     DX12UI(DX12Application& dx_app, std::string_view font_name, TextureManager& tex_mgr, ShaderManager& shd_mgr) : dx_app_(dx_app), tex_mgr_(tex_mgr), shd_mgr_(shd_mgr), res_mgr_(dx_app.GetRenderContext().GetGPUResourceManager()){
         LoadSDFCoords(font_name);
@@ -57,7 +65,8 @@ public:
             { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         };
-        Pipeline& ui_pipeline = dx_app_.GetRenderContext().CreatePipeline("ui", { 4, 4, 4, dx_app_.GetRenderPresets().enable_msaa_4x });
+
+        std::shared_ptr<Pipeline<DrawCallLayout>> ui_pipeline = dx_app_.GetRenderContext().CreatePipeline<DrawCallLayout>("ui", { 4, 4, 0, dx_app_.GetRenderPresets().enable_msaa_4x });
         D3D12_INPUT_LAYOUT_DESC layout = { ied, _countof(ied) };
         auto texts_tex = res_mgr_.CreateTexture("texts_tex", sdf.value().width, sdf.value().height, sdf.value().data);
         auto text_vertices_res = res_mgr_.CreateVertexBuffer("text_vertices", vertices_.data(), vertices_.size());
@@ -65,25 +74,22 @@ public:
         auto screen_info = res_mgr_.CreateCBuffer("screen_info", sc_info_);
         auto text_info = res_mgr_.CreateCBuffer("text_info", text_info_, _countof(text_info_));
         auto sdf_coords = res_mgr_.CreateCBuffer("sdf_coords", coords_.data(), coords_.size());
-        DescriptorHeap heap = ui_pipeline.GetDescriptorHeap();
-        ui_pipeline.BindVertexBuffer(text_vertices_res);
-        ui_pipeline.BindIndexBuffer(text_indices_res);
-        ui_pipeline.BindStaticSampler(CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR));
-        ui_pipeline.BindIALayout(layout);
-        ui_pipeline.BindVertexShader(vs.value());
-        ui_pipeline.BindFragmentShader(ps.value());
-        heap.BindTextureAsSRV(texts_tex);
-        heap.BindBufferAsSRV(sdf_coords);
-        heap.BindBufferAsSRV(text_info);
-        heap.BindBufferAsCBV(screen_info);
-        ui_pipeline.SetDrawInstancesCount(text_length_);
-        ui_pipeline.Build();
+        auto heap = dx_app.GetRenderContext().CreateTextureHeap<32>();
+        heap->BindTexture(texts_tex);
+        DrawCallLayout::Bindings bindings(sdf_coords, text_info, *heap.get(), screen_info, DrawCallStaticSamplerBinding<0, D3D12_FILTER_MIN_MAG_MIP_LINEAR>());
+        DrawCall<DrawCallLayout> draw_call(std::move(bindings));
+        draw_call.BindIABuffer(text_vertices_res, text_indices_res, text_length_);
+        ui_pipeline->BindDrawCall(draw_call);
+        ui_pipeline->BindIALayout(layout);
+        ui_pipeline->BindVertexShader(vs.value());
+        ui_pipeline->BindFragmentShader(ps.value());
+        ui_pipeline->Build();
     }
 
     void UpdateUI() {
-        Pipeline& ui_pipeline = dx_app_.GetRenderContext().SelectPipeline("ui");
         res_mgr_.ModifyCBuffer("text_info", text_info_, text_length_);
-        ui_pipeline.SetDrawInstancesCount(text_length_);
+        auto ui_pipeline = dx_app_.GetRenderContext().SelectPipeline<DrawCallLayout>("ui");
+        ui_pipeline->GetIABufferView(0).instance_count = text_length_;
         text_length_ = 0;
     }
 
